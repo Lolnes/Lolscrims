@@ -292,7 +292,16 @@ CREATE POLICY "anon_all_ladder_invites"      ON ladder_invites      FOR ALL TO a
 CREATE POLICY "anon_all_summoner_games"      ON summoner_games      FOR ALL TO anon USING (true) WITH CHECK (true);
 
 -- ============================================================
--- Listo. La app crea filas al primer guardado.
+-- 12. ENFORZAR UNICIDAD INSENSIBLE A MAYÚSCULAS EN USUARIOS
+-- ============================================================
+-- Eliminar la restricción de unicidad sensible a mayúsculas
+ALTER TABLE users DROP CONSTRAINT IF EXISTS users_name_unique;
+
+-- Crear un índice único insensible a mayúsculas/minúsculas para name
+DROP INDEX IF EXISTS users_name_lower_idx;
+CREATE UNIQUE INDEX IF NOT EXISTS users_name_lower_idx ON users (LOWER(name));
+
+-- Listo.
 -- ============================================================
 
 

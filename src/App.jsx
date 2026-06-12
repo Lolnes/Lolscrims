@@ -481,13 +481,18 @@ export default function App() {
       )}
 
       {/* ═══ Footer ═══ */}
-      <footer className="flex items-center justify-between mt-8" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
-        <span className="mono text-xs text-faint">Horario: 10:00 → 02:00 (hora local)</span>
-        <span className={`save-indicator ${saveState === 'saved' ? 'save-indicator--saved' : ''} ${saveState === 'error' ? 'save-indicator--error' : ''}`}>
-          {saveState === 'saving' && 'Guardando…'}
-          {saveState === 'saved' && '✓ Guardado'}
-          {saveState === 'error' && '⚠ No se pudo guardar'}
-        </span>
+      <footer className="mt-8" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
+        <div className="flex items-center justify-between">
+          <span className="mono text-xs text-faint">Horario: 10:00 → 02:00 (hora local)</span>
+          <span className={`save-indicator ${saveState === 'saved' ? 'save-indicator--saved' : ''} ${saveState === 'error' ? 'save-indicator--error' : ''}`}>
+            {saveState === 'saving' && 'Guardando…'}
+            {saveState === 'saved' && '✓ Guardado'}
+            {saveState === 'error' && '⚠ No se pudo guardar'}
+          </span>
+        </div>
+        <div className="text-muted text-center text-xs mt-3" style={{ fontSize: '0.65rem', lineHeight: '1.4', maxWidth: '800px', margin: '0.75rem auto 0 auto' }}>
+          LoL Team Planner is not endorsed by Riot Games and does not reflect the views or opinions of Riot Games or anyone officially involved in producing or managing Riot Games properties. Riot Games and all associated properties are trademarks or registered trademarks of Riot Games, Inc.
+        </div>
       </footer>
 
       {/* ═══ Export/Import Modal ═══ */}
@@ -2978,7 +2983,6 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const [editTier, setEditTier] = useState('UNRANKED');
   const [editDivision, setEditDivision] = useState('IV');
   const [editLp, setEditLp] = useState(0);
-  const [riotApiKey, setRiotApiKey] = useState(() => localStorage.getItem('lol-riot-api-key') || '');
 
   const [newLadderName, setNewLadderName] = useState('');
   const [newLadderType, setNewLadderType] = useState('soloq');
@@ -3095,7 +3099,6 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
     try {
-      localStorage.setItem('lol-riot-api-key', riotApiKey);
       await updateUserProfile(currentUserId, editSummonerName, editPrivacy);
       await fetchMyProfile();
       if (selectedLadderId) {
@@ -3620,22 +3623,8 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                 </select>
               </div>
 
-              <div className="form-group">
-                <label className="form-label">Riot API Key (Opcional - Datos reales)</label>
-                <input 
-                  type="text" 
-                  className="form-input" 
-                  value={riotApiKey} 
-                  onChange={e => setRiotApiKey(e.target.value)}
-                  placeholder="RGAPI-XXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
-                />
-                <span className="text-xs text-muted" style={{ display: 'block', marginTop: '0.25rem' }}>
-                  Si ingresas tu API Key de Riot (consíguela en developer.riotgames.com), se obtendrá tu Elo real e historial. Si la dejas vacía, se simulará basado en tiempo.
-                </span>
-              </div>
-
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }} className="text-xs text-muted">
-                ℹ️ Tu Elo y clasificación se resolverán automáticamente basándose en tu Summoner Name (ej: nombres como "Faker" darán Retador, mientras que otros nombres asignarán rangos realistas de Hierro a Diamante).
+                ℹ️ Tu Elo, división e historial de partidas se sincronizarán directamente de los servidores de Riot Games utilizando la API Key global configurada.
               </div>
 
               <div className="flex items-center justify-end gap-2 mt-4">

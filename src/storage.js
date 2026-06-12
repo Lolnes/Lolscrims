@@ -1346,8 +1346,8 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     return { success: false, gamesAdded: 0, status: 'Supabase no configurado' };
   }
 
-  // Intentar obtener la API Key del localStorage o del .env
-  const apiKey = localStorage.getItem('lol-riot-api-key') || import.meta.env.VITE_RIOT_API_KEY || '';
+  // Obtener la API Key desde las variables de entorno (.env / Vercel)
+  const apiKey = import.meta.env.VITE_RIOT_API_KEY || '';
 
   // Si no hay API Key, usamos la simulación basada en tiempo transcurrido
   if (!apiKey) {

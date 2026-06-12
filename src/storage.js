@@ -185,6 +185,10 @@ function migrateV2(old) {
   };
 }
 
+// ---------- uid helper ----------
+
+function uid() { return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
+
 // ---------- Password Hashing ----------
 
 export async function hashPassword(password) {
@@ -232,26 +236,26 @@ export async function loadTeamData(teamCode) {
   if (!teamInfo) return null;
 
   const [
-    { data: dbPlayers },
+    { data: dbMembers },
     { data: dbComps },
     { data: dbDrafts },
     { data: dbScrims }
   ] = await Promise.all([
-    supabase.from('players').select('*').eq('team_id', teamCode),
+    supabase.from('team_members').select('*, users(name)').eq('team_id', teamCode),
     supabase.from('comps').select('*').eq('team_id', teamCode),
     supabase.from('drafts').select('*').eq('team_id', teamCode),
     supabase.from('scrims').select('*').eq('team_id', teamCode)
   ]);
 
-  const players = (dbPlayers || []).map(p => ({
-    id: p.id,
-    name: p.name,
-    team: p.team,
-    role: p.role,
-    secondaryRole: p.secondary_role || '',
-    avail: p.avail || {},
-    pool: p.pool || [],
-    password: p.password || ''
+  const players = (dbMembers || []).map(m => ({
+    id: m.id,
+    userId: m.user_id,
+    name: m.users?.name || '?',
+    role: m.game_role || 'mid',
+    secondaryRole: m.secondary_role || '',
+    teamRole: m.team_role || 'player',
+    avail: m.avail || {},
+    pool: m.pool || [],
   }));
 
   const comps = (dbComps || []).map(c => ({
@@ -308,34 +312,18 @@ export async function syncTeamData(teamCode, data) {
       .eq('id', teamCode);
   }
 
-  // Sync players
+  // Sync team_members (avail + pool + role per member, no bulk replace)
   if (data.players) {
-    const { data: dbPlayers } = await supabase
-      .from('players')
-      .select('id')
-      .eq('team_id', teamCode);
-
-    const dbIds = (dbPlayers || []).map(p => p.id);
-    const newIds = data.players.map(p => p.id);
-    const idsToDelete = dbIds.filter(id => !newIds.includes(id));
-
-    if (idsToDelete.length > 0) {
-      await supabase.from('players').delete().in('id', idsToDelete);
-    }
-
-    if (data.players.length > 0) {
-      const rows = data.players.map(p => ({
-        id: p.id,
-        team_id: teamCode,
-        name: p.name,
-        team: p.team,
-        role: p.role,
-        secondary_role: p.secondaryRole || '',
-        avail: p.avail || {},
-        pool: p.pool || [],
-        password: p.password || ''
-      }));
-      await supabase.from('players').upsert(rows);
+    for (const p of data.players) {
+      if (!p.id) continue;
+      await supabase.from('team_members')
+        .update({
+          avail: p.avail || {},
+          pool: p.pool || [],
+          game_role: p.role || 'mid',
+          secondary_role: p.secondaryRole || '',
+        })
+        .eq('id', p.id);
     }
   }
 
@@ -514,6 +502,216 @@ export function exportJSON(data) {
   a.download = `lol-team-data-${new Date().toISOString().slice(0, 10)}.json`;
   a.click();
   URL.revokeObjectURL(url);
+}
+
+// ═══════════════════════════════════════════════════════════
+// GLOBAL USER AUTH
+// ═══════════════════════════════════════════════════════════
+
+export function getCurrentUserId() {
+  return localStorage.getItem('lol-user-id') || '';
+}
+
+export function setCurrentUserIdStorage(id) {
+  if (id) localStorage.setItem('lol-user-id', id);
+  else localStorage.removeItem('lol-user-id');
+}
+
+export function getCurrentUserNameStorage() {
+  return localStorage.getItem('lol-user-name') || '';
+}
+
+export function setCurrentUserNameStorage(name) {
+  if (name) localStorage.setItem('lol-user-name', name);
+  else localStorage.removeItem('lol-user-name');
+}
+
+export async function registerUser(name, password) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no está configurado');
+  const trimmed = name.trim();
+  if (!trimmed) throw new Error('El nombre no puede estar vacío');
+
+  const { data: existing } = await supabase
+    .from('users').select('id').ilike('name', trimmed).maybeSingle();
+  if (existing) throw new Error('Ya existe una cuenta con ese nombre de invocador');
+
+  const hashed = await hashPassword(password);
+  const id = `u_${uid()}`;
+  const { error } = await supabase.from('users').insert([{ id, name: trimmed, password: hashed }]);
+  if (error) throw new Error('Error al crear cuenta: ' + error.message);
+  return { id, name: trimmed };
+}
+
+export async function loginUser(name, password) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no está configurado');
+
+  const { data: user } = await supabase
+    .from('users').select('*').ilike('name', name.trim()).maybeSingle();
+  if (!user) throw new Error('Invocador no encontrado');
+
+  const hashed = await hashPassword(password);
+  if (user.password !== hashed && user.password !== password) {
+    throw new Error('Contraseña incorrecta');
+  }
+  return { id: user.id, name: user.name };
+}
+
+// ═══════════════════════════════════════════════════════════
+// TEAM DIRECTORY
+// ═══════════════════════════════════════════════════════════
+
+export async function searchPublicTeams(query) {
+  if (!isSupabaseConfigured) return [];
+
+  let q = supabase.from('teams').select('id, name').eq('is_public', true).order('name');
+  if (query.trim()) q = q.ilike('name', `%${query.trim()}%`);
+
+  const { data } = await q.limit(20);
+  if (!data || data.length === 0) return [];
+
+  const { data: counts } = await supabase
+    .from('team_members').select('team_id').in('team_id', data.map(t => t.id));
+
+  const countMap = {};
+  for (const c of (counts || [])) countMap[c.team_id] = (countMap[c.team_id] || 0) + 1;
+
+  return data.map(t => ({ id: t.id, name: t.name, memberCount: countMap[t.id] || 0 }));
+}
+
+export async function getUserTeams(userId) {
+  if (!isSupabaseConfigured || !userId) return [];
+
+  const { data } = await supabase
+    .from('team_members')
+    .select('id, team_id, game_role, team_role, teams(name, captain_id)')
+    .eq('user_id', userId);
+
+  if (!data) return [];
+  return data.map(m => ({
+    memberId: m.id,
+    teamId: m.team_id,
+    teamName: m.teams?.name || '',
+    gameRole: m.game_role,
+    teamRole: m.team_role,
+  }));
+}
+
+export async function getUserPendingRequests(userId) {
+  if (!isSupabaseConfigured || !userId) return [];
+
+  const { data } = await supabase
+    .from('join_requests')
+    .select('id, team_id, game_role, status, teams(name)')
+    .eq('user_id', userId)
+    .order('created_at', { ascending: false });
+
+  if (!data) return [];
+  return data.map(r => ({
+    id: r.id,
+    teamId: r.team_id,
+    teamName: r.teams?.name || r.team_id,
+    gameRole: r.game_role,
+    status: r.status,
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════
+// TEAM MANAGEMENT
+// ═══════════════════════════════════════════════════════════
+
+export async function createTeamWithCaptain(teamName, captainUserId, gameRole) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no está configurado');
+
+  const slug = teamName.trim().toLowerCase().replace(/[^a-z0-9]/g, '-').slice(0, 20);
+  const teamId = `${slug}-${Date.now().toString(36)}`;
+
+  const { error: teamErr } = await supabase.from('teams').insert([{
+    id: teamId,
+    name: teamName.trim(),
+    captain_id: captainUserId,
+    is_public: true,
+    threshold: 5,
+  }]);
+  if (teamErr) throw new Error('Error al crear equipo: ' + teamErr.message);
+
+  const memberId = `tm_${uid()}`;
+  const { error: memberErr } = await supabase.from('team_members').insert([{
+    id: memberId,
+    user_id: captainUserId,
+    team_id: teamId,
+    game_role: gameRole,
+    team_role: 'captain',
+    avail: {},
+    pool: [],
+  }]);
+  if (memberErr) throw new Error('Error al crear membresía: ' + memberErr.message);
+
+  return { teamId, teamName: teamName.trim(), memberId };
+}
+
+// ═══════════════════════════════════════════════════════════
+// JOIN REQUESTS
+// ═══════════════════════════════════════════════════════════
+
+export async function requestJoinTeam(userId, teamId, gameRole, message) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no está configurado');
+
+  const { data: existing } = await supabase
+    .from('team_members').select('id').eq('user_id', userId).eq('team_id', teamId).maybeSingle();
+  if (existing) throw new Error('Ya eres miembro de este equipo');
+
+  const id = `jr_${uid()}`;
+  const { error } = await supabase.from('join_requests').upsert(
+    [{ id, user_id: userId, team_id: teamId, game_role: gameRole, message: message || '', status: 'pending' }],
+    { onConflict: 'user_id,team_id' }
+  );
+  if (error) throw new Error('Error al enviar solicitud: ' + error.message);
+  return true;
+}
+
+export async function loadJoinRequests(teamId) {
+  if (!isSupabaseConfigured || !teamId) return [];
+
+  const { data } = await supabase
+    .from('join_requests')
+    .select('*, users(name)')
+    .eq('team_id', teamId)
+    .eq('status', 'pending')
+    .order('created_at');
+
+  if (!data) return [];
+  return data.map(r => ({
+    id: r.id,
+    userId: r.user_id,
+    userName: r.users?.name || '?',
+    gameRole: r.game_role,
+    message: r.message,
+    createdAt: r.created_at,
+  }));
+}
+
+export async function acceptJoinRequest(requestId, userId, teamId, gameRole, teamRole = 'player') {
+  const memberId = `tm_${uid()}`;
+  const { error: memberErr } = await supabase.from('team_members').insert([{
+    id: memberId, user_id: userId, team_id: teamId,
+    game_role: gameRole, team_role: teamRole, avail: {}, pool: [],
+  }]);
+  if (memberErr) throw new Error('Error al agregar miembro: ' + memberErr.message);
+
+  await supabase.from('join_requests').update({ status: 'accepted' }).eq('id', requestId);
+  return memberId;
+}
+
+export async function rejectJoinRequest(requestId) {
+  const { error } = await supabase
+    .from('join_requests').update({ status: 'rejected' }).eq('id', requestId);
+  if (error) throw new Error('Error al rechazar: ' + error.message);
+}
+
+export async function removeMemberFromTeam(userId, teamId) {
+  const { error } = await supabase
+    .from('team_members').delete().eq('user_id', userId).eq('team_id', teamId);
+  if (error) throw new Error('Error al eliminar miembro: ' + error.message);
 }
 
 export function importJSON(jsonString) {

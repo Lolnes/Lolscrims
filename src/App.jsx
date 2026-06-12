@@ -10,9 +10,14 @@ import {
 } from './constants';
 import {
   loadData, saveData, exportJSON, importJSON,
-  getActiveTeamCode, setActiveTeamCode, createTeam,
-  getCurrentSessionPlayerId, setCurrentSessionPlayerId,
-  hashPassword,
+  getActiveTeamCode, setActiveTeamCode,
+  getCurrentUserId, setCurrentUserIdStorage,
+  getCurrentUserNameStorage, setCurrentUserNameStorage,
+  registerUser, loginUser,
+  searchPublicTeams, getUserTeams, getUserPendingRequests,
+  createTeamWithCaptain,
+  requestJoinTeam, loadJoinRequests,
+  acceptJoinRequest, rejectJoinRequest, removeMemberFromTeam,
 } from './storage';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { formatDiscord } from './utils/discord';
@@ -49,33 +54,35 @@ export default function App() {
   const [drafts, setDrafts] = useState([]);
   const [scrims, setScrims] = useState([]);
   const [threshold, setThreshold] = useState(5);
-  const [tab, setTab] = useState('schedule'); // schedule | comps | scrims | stats
+  const [tab, setTab] = useState('schedule');
   const [loaded, setLoaded] = useState(false);
   const [saveState, setSaveState] = useState('idle');
   const saveTimer = useRef(null);
 
-  /* Player session state */
-  const [sessionPlayerId, setSessionPlayerId] = useState(() => getCurrentSessionPlayerId());
+  /* Global user auth */
+  const [currentUserId, setCurrentUserId] = useState(() => getCurrentUserId());
+  const [currentUserName, setCurrentUserName] = useState(() => getCurrentUserNameStorage());
 
-  const sessionPlayer = useMemo(() => {
-    return players.find(p => p.id === sessionPlayerId);
-  }, [players, sessionPlayerId]);
-
-  /* Supabase Collaborative States */
+  /* Team state */
   const [teamCode, setTeamCode] = useState(() => getActiveTeamCode());
   const [teamName, setTeamName] = useState('');
-  const [localMode, setLocalMode] = useState(() => localStorage.getItem('lol-local-mode') === 'true');
+  const [myTeamRole, setMyTeamRole] = useState('player');
+  const [joinRequests, setJoinRequests] = useState([]);
 
-  const [joinCode, setJoinCode] = useState('');
-  const [createCode, setCreateCode] = useState('');
-  const [createName, setCreateName] = useState('');
-  const [loadingCode, setLoadingCode] = useState(false);
+  /* Derived: current user's member record in this team */
+  const sessionPlayer = useMemo(
+    () => players.find(p => p.userId === currentUserId) || null,
+    [players, currentUserId]
+  );
+  const sessionPlayerId = sessionPlayer?.id || '';
 
   /* Dragon */
   const { champions, version: dragonVersion, loading: dragonLoading } = useDragon();
 
   /* ─── persistence ─── */
   useEffect(() => {
+    if (!teamCode) { setLoaded(true); return; }
+    setLoaded(false);
     loadData().then((data) => {
       setPlayers(data.players || []);
       setComps(data.comps || []);
@@ -83,15 +90,15 @@ export default function App() {
       setScrims(data.scrims || []);
       setThreshold(data.threshold || 5);
       setTeamName(data.teamName || '');
+      // Set my team role from loaded members
+      const myMember = (data.players || []).find(p => p.userId === currentUserId);
+      setMyTeamRole(myMember?.teamRole || 'player');
       setLoaded(true);
     });
-  }, [teamCode, localMode]);
+  }, [teamCode, currentUserId]);
 
   useEffect(() => {
-    if (!loaded) return;
-    // Don't auto-save if in portal screen and not yet loaded
-    if (isSupabaseConfigured && !teamCode && !localMode) return;
-
+    if (!loaded || !teamCode) return;
     setSaveState('saving');
     clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
@@ -103,94 +110,72 @@ export default function App() {
       }
     }, 500);
     return () => clearTimeout(saveTimer.current);
-  }, [players, comps, drafts, scrims, threshold, loaded, teamCode, localMode]);
+  }, [players, comps, drafts, scrims, threshold, loaded, teamCode]);
 
-  /* ─── portal actions ─── */
-  const handleJoin = async (e) => {
-    e.preventDefault();
-    if (!joinCode.trim()) return;
-    const cleanCode = joinCode.trim().toLowerCase();
-    setLoadingCode(true);
-    try {
-      const { data, error } = await supabase
-        .from('teams')
-        .select('name')
-        .eq('id', cleanCode)
-        .maybeSingle();
+  // Load join requests for captain
+  useEffect(() => {
+    if (myTeamRole !== 'captain' || !teamCode) return;
+    loadJoinRequests(teamCode).then(setJoinRequests).catch(() => {});
+  }, [myTeamRole, teamCode]);
 
-      if (error) throw error;
-      if (!data) {
-        alert('Código de equipo no encontrado. Verifica e intenta de nuevo.');
-        return;
-      }
-
-      setActiveTeamCode(cleanCode);
-      localStorage.setItem('lol-local-mode', 'false');
-      setTeamCode(cleanCode);
-      setLocalMode(false);
-      setTeamName(data.name);
-    } catch (err) {
-      alert('Error al unirse: ' + err.message);
-    } finally {
-      setLoadingCode(false);
-    }
+  /* ─── auth & team handlers ─── */
+  const handleGlobalLogin = async (name, password) => {
+    const user = await loginUser(name, password); // throws on error
+    setCurrentUserId(user.id);
+    setCurrentUserName(user.name);
+    setCurrentUserIdStorage(user.id);
+    setCurrentUserNameStorage(user.name);
   };
 
-  const handleCreate = async (e) => {
-    e.preventDefault();
-    if (!createCode.trim() || !createName.trim()) return;
-    const cleanCode = createCode.trim().toLowerCase();
-    const cleanName = createName.trim();
-    
-    if (!/^[a-z0-9-_]+$/.test(cleanCode)) {
-      alert('El código solo puede contener letras minúsculas, números, guiones y guiones bajos.');
-      return;
-    }
-
-    setLoadingCode(true);
-    try {
-      const success = await createTeam(cleanCode, cleanName);
-      if (success) {
-        setActiveTeamCode(cleanCode);
-        localStorage.setItem('lol-local-mode', 'false');
-        setTeamCode(cleanCode);
-        setLocalMode(false);
-        setTeamName(cleanName);
-        // Reset state for new team
-        setPlayers([]);
-        setComps([]);
-        setDrafts([]);
-        setScrims([]);
-      }
-    } catch (err) {
-      alert(err.message);
-    } finally {
-      setLoadingCode(false);
-    }
+  const handleGlobalRegister = async (name, password) => {
+    const user = await registerUser(name, password); // throws on error
+    setCurrentUserId(user.id);
+    setCurrentUserName(user.name);
+    setCurrentUserIdStorage(user.id);
+    setCurrentUserNameStorage(user.name);
   };
 
-  const handleLocalMode = () => {
+  const handleSelectTeam = (teamId, tName, teamRole) => {
+    setActiveTeamCode(teamId);
+    setTeamCode(teamId);
+    setTeamName(tName);
+    setMyTeamRole(teamRole);
+    setLoaded(false);
+  };
+
+  const handleCreateTeamFlow = async (tName, gameRole) => {
+    const result = await createTeamWithCaptain(tName, currentUserId, gameRole);
+    setActiveTeamCode(result.teamId);
+    setTeamCode(result.teamId);
+    setTeamName(result.teamName);
+    setMyTeamRole('captain');
+    setPlayers([]);
+    setComps([]);
+    setDrafts([]);
+    setScrims([]);
+    setLoaded(false);
+  };
+
+  const handleLeaveTeam = () => {
     setActiveTeamCode('');
-    localStorage.setItem('lol-local-mode', 'true');
-    setLocalMode(true);
     setTeamCode('');
+    setTeamName('');
+    setMyTeamRole('player');
+    setPlayers([]);
+    setComps([]);
+    setDrafts([]);
+    setScrims([]);
+    setLoaded(false);
   };
 
   const handleLogout = () => {
-    if (window.confirm('¿Deseas salir del equipo? Se mantendrá una copia en tu almacenamiento local.')) {
-      setActiveTeamCode('');
-      localStorage.setItem('lol-local-mode', 'false');
-      setCurrentSessionPlayerId('');
-      setSessionPlayerId('');
-      setTeamCode('');
-      setLocalMode(false);
-      setTeamName('');
-    }
-  };
-
-  const handleGoCloud = () => {
+    handleLeaveTeam();
+    setCurrentUserId('');
+    setCurrentUserName('');
+    setCurrentUserIdStorage('');
+    setCurrentUserNameStorage('');
+    setActiveTeamCode('');
     localStorage.removeItem('lol-local-mode');
-    setLocalMode(false);
   };
 
   /* ─── cell data (for schedule) ─── */
@@ -198,31 +183,30 @@ export default function App() {
     const m = {};
     for (const p of players) {
       for (const k of Object.keys(p.avail || {})) {
-        if (!m[k]) m[k] = { azul: [], rojo: [] };
-        m[k][p.team].push(p.name);
+        if (!m[k]) m[k] = [];
+        m[k].push(p.name);
       }
     }
     return m;
   }, [players]);
 
   const countOf = useCallback(
-    (key, team) => cellData[key]?.[team]?.length || 0,
+    (key) => cellData[key]?.length || 0,
     [cellData]
   );
 
   /* ─── windows ─── */
-  const windowDetail = useCallback((run, team) => {
+  const windowDetail = useCallback((run) => {
     const slots = [];
     for (let i = run.start; i <= run.end; i++) slots.push(`${run.day}-${i}`);
     const full = [], partial = [];
     let min = Infinity, max = 0;
     for (const k of slots) {
-      const n = countOf(k, team);
+      const n = countOf(k);
       min = Math.min(min, n);
       max = Math.max(max, n);
     }
     for (const p of players) {
-      if (p.team !== team) continue;
       const c = slots.filter((k) => p.avail?.[k]).length;
       if (c === slots.length) full.push(p.name);
       else if (c > 0) partial.push(p.name);
@@ -230,22 +214,9 @@ export default function App() {
     return { full, partial, min, max };
   }, [players, countOf]);
 
-  const teamWindows = useMemo(() => {
-    const out = {};
-    for (const t of TEAM_IDS) {
-      out[t] = findRuns((k) => countOf(k, t) >= threshold)
-        .map((run) => ({ ...run, detail: windowDetail(run, t) }));
-    }
-    return out;
-  }, [countOf, threshold, windowDetail]);
-
-  const scrimWindows = useMemo(
-    () => findRuns((k) => countOf(k, 'azul') >= threshold && countOf(k, 'rojo') >= threshold)
-      .map((run) => ({
-        ...run,
-        azul: windowDetail(run, 'azul'),
-        rojo: windowDetail(run, 'rojo'),
-      })),
+  const windows = useMemo(
+    () => findRuns((k) => countOf(k) >= threshold)
+      .map((run) => ({ ...run, detail: windowDetail(run) })),
     [countOf, threshold, windowDetail]
   );
 
@@ -275,22 +246,24 @@ export default function App() {
     }
   };
 
-  /* ─── loading screen ─── */
-  const showPortal = isSupabaseConfigured && !teamCode && !localMode;
-
-  if (showPortal) {
+  /* ─── routing ─── */
+  if (!currentUserId) {
     return (
-      <PortalView
-        joinCode={joinCode}
-        setJoinCode={setJoinCode}
-        createCode={createCode}
-        setCreateCode={setCreateCode}
-        createName={createName}
-        setCreateName={setCreateName}
-        loading={loadingCode}
-        onJoin={handleJoin}
-        onCreate={handleCreate}
-        onLocal={handleLocalMode}
+      <GlobalAuthScreen
+        onLogin={handleGlobalLogin}
+        onRegister={handleGlobalRegister}
+      />
+    );
+  }
+
+  if (!teamCode) {
+    return (
+      <TeamDirectoryScreen
+        currentUserId={currentUserId}
+        currentUserName={currentUserName}
+        onSelectTeam={handleSelectTeam}
+        onCreateTeam={handleCreateTeamFlow}
+        onLogout={handleLogout}
       />
     );
   }
@@ -303,57 +276,18 @@ export default function App() {
     );
   }
 
-  if (!sessionPlayerId) {
-    return (
-      <PlayerPortalView
-        players={players}
-        onLogin={async (playerId, password) => {
-          const p = players.find(x => x.id === playerId);
-          if (!p) return 'Invocador no encontrado.';
-          const hashed = await hashPassword(password);
-          // Support both legacy plaintext (dev) and hashed passwords
-          const match = p.password === hashed || p.password === password;
-          if (!match) return 'Contraseña incorrecta.';
-          setCurrentSessionPlayerId(playerId);
-          setSessionPlayerId(playerId);
-          return null; // null = success
-        }}
-        onRegister={async (name, team, role, password) => {
-          if (players.some(p => p.name.toLowerCase() === name.toLowerCase())) {
-            return 'Ya existe un invocador con este nombre en el equipo.';
-          }
-          const hashed = await hashPassword(password);
-          const id = `p_${uid()}`;
-          const newPlayer = {
-            id, name, team, role,
-            secondaryRole: '',
-            avail: {},
-            pool: [],
-            password: hashed,
-          };
-          setPlayers(ps => [...ps, newPlayer]);
-          setCurrentSessionPlayerId(id);
-          setSessionPlayerId(id);
-          return null; // null = success
-        }}
-        onSpectator={() => {
-          setCurrentSessionPlayerId('spectator');
-          setSessionPlayerId('spectator');
-        }}
-        teamName={teamCode ? `${teamCode} (${teamName})` : 'Modo Local'}
-        onExitTeam={handleLogout}
-        isLocalMode={localMode}
-      />
-    );
-  }
-
   /* ─── tabs config ─── */
   const TABS = [
     { id: 'schedule', label: 'Horarios',      icon: '📅' },
     { id: 'comps',    label: 'Composiciones', icon: '⚔️' },
     { id: 'scrims',   label: 'Scrims',        icon: '📝' },
     { id: 'stats',    label: 'Stats',         icon: '📊' },
+    ...(myTeamRole === 'captain' ? [{ id: 'captain', label: 'Capitán', icon: '👑' }] : []),
   ];
+
+  const isCaptain = myTeamRole === 'captain';
+  const isCoachOrManager = myTeamRole === 'coach' || myTeamRole === 'manager';
+  const canEdit = !isCoachOrManager;
 
   return (
     <div className="app-container">
@@ -362,60 +296,47 @@ export default function App() {
         <div>
           <div className="app-header__brand" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
             <span>League Planner · Patch {dragonVersion || '…'}</span>
-            {isSupabaseConfigured && (
-              <span className="chip chip--sm chip--gold font-mono" style={{ fontSize: '0.6rem', textTransform: 'none', letterSpacing: 'normal' }}>
-                {teamCode ? `☁️ Sincronizado: ${teamCode} (${teamName})` : '📴 Modo Local'}
-              </span>
-            )}
+            <span className="chip chip--sm chip--gold font-mono" style={{ fontSize: '0.6rem', textTransform: 'none', letterSpacing: 'normal' }}>
+              ☁️ {teamName}
+            </span>
           </div>
           <h1 className="app-header__title">¿Cuándo jugamos?</h1>
           <p className="app-header__subtitle">
             Gestiona horarios, composiciones, champion pools y notas de tus scrims en un solo lugar.
           </p>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem', flexWrap: 'wrap' }}>
-            {sessionPlayerId === 'spectator' ? (
-              <span className="chip chip--sm chip--red font-mono" style={{ fontSize: '0.7rem' }}>
-                👓 Modo Espectador (Solo Lectura)
+            {sessionPlayer ? (
+              <span className="chip chip--sm chip--green font-mono" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                🟢
+                <span style={{ fontWeight: 'bold' }}>
+                  {ROLE_MAP[sessionPlayer.role]?.icon || '❓'} {sessionPlayer.name}
+                </span>
+                <span className="text-faint">· {myTeamRole}</span>
+                {isCaptain && joinRequests.length > 0 && (
+                  <span className="chip chip--sm" style={{ background: 'var(--red-bright)', color: '#fff', padding: '0 0.3rem', fontSize: '0.6rem' }}>
+                    {joinRequests.length}
+                  </span>
+                )}
               </span>
             ) : (
-              sessionPlayer && (
-                <span className="chip chip--sm chip--green font-mono" style={{ fontSize: '0.7rem', display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                  <span>🟢 Sesión:</span>
-                  <span style={{ color: TEAMS[sessionPlayer.team].color, fontWeight: 'bold' }}>
-                    {ROLE_MAP[sessionPlayer.role]?.icon || '❓'} {sessionPlayer.name} ({TEAMS[sessionPlayer.team].short})
-                  </span>
-                </span>
-              )
+              <span className="chip chip--sm font-mono" style={{ fontSize: '0.7rem', color: 'var(--gold-bright)' }}>
+                👤 {currentUserName} · {myTeamRole}
+              </span>
             )}
-            <button
-              className="btn btn--outline btn--sm"
-              onClick={() => {
-                setCurrentSessionPlayerId('');
-                setSessionPlayerId('');
-              }}
-              style={{ padding: '0.1rem 0.5rem', fontSize: '0.65rem', borderRadius: '4px', height: 'auto' }}
-            >
-              🔄 Cambiar de Perfil
-            </button>
           </div>
         </div>
         <div className="flex items-center gap-3 header-controls">
-          {isSupabaseConfigured && (
-            teamCode ? (
-              <button className="btn btn--outline btn--sm" onClick={handleLogout} style={{ color: 'var(--red-text)' }}>
-                🚪 Salir del Equipo
-              </button>
-            ) : (
-              <button className="btn btn--gold btn--sm" onClick={handleGoCloud}>
-                🌐 Sincronizar en Nube
-              </button>
-            )
-          )}
+          <button className="btn btn--outline btn--sm" onClick={handleLeaveTeam}>
+            ← Equipos
+          </button>
+          <button className="btn btn--outline btn--sm" onClick={handleLogout} style={{ color: 'var(--red-text)' }}>
+            Cerrar sesión
+          </button>
           <button className="btn btn--outline btn--sm" onClick={() => setShowExport(true)}>
             📦 Export / Import
           </button>
           <div className="threshold-control">
-            <div className="threshold-control__label">Mínimo por equipo</div>
+            <div className="threshold-control__label">Mínimo jugadores</div>
             <div className="threshold-control__row">
               <button className="threshold-btn" onClick={() => setThreshold((t) => Math.max(2, t - 1))}>−</button>
               <span className="threshold-control__value">{threshold}</span>
@@ -435,6 +356,11 @@ export default function App() {
           >
             <span className="tab-bar__icon">{t.icon}</span>
             <span className="tab-bar__label">{t.label}</span>
+            {t.id === 'captain' && joinRequests.length > 0 && (
+              <span style={{ background: 'var(--red-bright)', color: '#fff', borderRadius: '9999px', padding: '0 0.35rem', fontSize: '0.6rem', marginLeft: '0.25rem' }}>
+                {joinRequests.length}
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -447,10 +373,10 @@ export default function App() {
           cellData={cellData}
           countOf={countOf}
           threshold={threshold}
-          teamWindows={teamWindows}
-          scrimWindows={scrimWindows}
+          windows={windows}
           champions={champions}
           sessionPlayerId={sessionPlayerId}
+          canEdit={canEdit}
         />
       )}
       {tab === 'comps' && (
@@ -483,6 +409,17 @@ export default function App() {
         />
       )}
 
+      {tab === 'captain' && (
+        <CaptainPanel
+          joinRequests={joinRequests}
+          setJoinRequests={setJoinRequests}
+          players={players}
+          setPlayers={setPlayers}
+          teamCode={teamCode}
+          currentUserId={currentUserId}
+        />
+      )}
+
       {/* ═══ Footer ═══ */}
       <footer className="flex items-center justify-between mt-8" style={{ borderTop: '1px solid var(--border)', paddingTop: '0.75rem' }}>
         <span className="mono text-xs text-faint">Horario: 10:00 → 02:00 (hora local)</span>
@@ -510,28 +447,21 @@ export default function App() {
    SCHEDULE TAB
    ═══════════════════════════════════════════════════════════════════ */
 
-function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWindows, scrimWindows, champions, sessionPlayerId }) {
+function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, windows, champions, sessionPlayerId, canEdit }) {
   const [activeId, setActiveId] = useState(() => {
-    if (sessionPlayerId && sessionPlayerId !== 'spectator' && players.some((p) => p.id === sessionPlayerId)) {
-      return sessionPlayerId;
-    }
+    if (sessionPlayerId && players.some((p) => p.id === sessionPlayerId)) return sessionPlayerId;
     return 'map';
   });
-  const [mapView, setMapView] = useState('ambos');
   const paint = useRef({ active: false, value: true });
 
   const activePlayer = players.find((p) => p.id === activeId);
   const isMapView = !activePlayer;
-  const isEditable = activePlayer && sessionPlayerId === activePlayer.id;
+  const isEditable = canEdit && activePlayer && sessionPlayerId === activePlayer.id;
 
   /* player actions */
   const removePlayer = (id) => {
     setPlayers((ps) => ps.filter((p) => p.id !== id));
     if (activeId === id) setActiveId('map');
-  };
-
-  const switchTeam = (id) => {
-    setPlayers((ps) => ps.map((p) => p.id === id ? { ...p, team: p.team === 'azul' ? 'rojo' : 'azul' } : p));
   };
 
   const setPlayerRole = (id, role) => {
@@ -588,99 +518,75 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWi
     }));
   };
 
-  const rosterOf = (t) => players.filter((p) => p.team === t);
-
   return (
     <div>
-      {/* ── Rosters ── */}
-      <div className="two-col mb-4">
-        {TEAM_IDS.map((t) => (
-          <div key={t} className={`card card--${t === 'azul' ? 'blue' : 'red'}`}>
-            <div className="card__header">
-              <span className="card__title" style={{ color: TEAMS[t].text }}>{TEAMS[t].name}</span>
-              <span className="mono text-xs text-muted">{rosterOf(t).length} jugador{rosterOf(t).length === 1 ? '' : 'es'}</span>
+      {/* ── Roster ── */}
+      <div className="card mb-4">
+        <div className="card__header">
+          <span className="card__title">Roster del equipo</span>
+          <span className="mono text-xs text-muted">{players.length} jugador{players.length === 1 ? '' : 'es'}</span>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {players.length === 0 && <span className="text-xs text-faint">Nadie en el equipo aún. El capitán debe aceptar solicitudes de unión.</span>}
+          {players.map((p) => (
+            <div
+              key={p.id}
+              className={`player-chip ${activeId === p.id ? 'player-chip--active' : ''}`}
+              style={{ borderColor: activeId === p.id ? 'var(--gold-primary)' : undefined }}
+              onClick={() => setActiveId(p.id)}
+            >
+              <span className="player-chip__role">{ROLE_MAP[p.role]?.icon || '❓'}</span>
+              <span>{p.name}</span>
+              <span className="player-chip__hours">{Object.keys(p.avail || {}).length}h</span>
+              {sessionPlayerId === p.id && (
+                <button className="player-chip__action player-chip__action--danger" onClick={(e) => { e.stopPropagation(); removePlayer(p.id); }} title="Salir del equipo">✕</button>
+              )}
             </div>
-            <div className="flex flex-wrap gap-2">
-              {rosterOf(t).length === 0 && <span className="text-xs text-faint">Sin jugadores todavía.</span>}
-              {rosterOf(t).map((p) => (
-                <div
-                  key={p.id}
-                  className={`player-chip ${activeId === p.id ? 'player-chip--active' : ''}`}
-                  style={{ background: TEAMS[t].chip, borderColor: TEAMS[t].border }}
-                  onClick={() => setActiveId(p.id)}
-                >
-                  <span className="player-chip__role">{ROLE_MAP[p.role]?.icon || '❓'}</span>
-                  <span>{p.name}</span>
-                  <span className="player-chip__hours">{Object.keys(p.avail || {}).length}h</span>
-                  {sessionPlayerId === p.id && (
-                    <>
-                      <button className="player-chip__action" onClick={(e) => { e.stopPropagation(); switchTeam(p.id); }} title="Cambiar de equipo">⇄</button>
-                      <button className="player-chip__action player-chip__action--danger" onClick={(e) => { e.stopPropagation(); removePlayer(p.id); }} title="Quitar">✕</button>
-                    </>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
+          ))}
+        </div>
       </div>
 
-      {/* ── Player tabs ── */}
+      {/* ── Player selector ── */}
       <div className="flex flex-wrap gap-1 mb-3">
         <button
           className={`tab-bar__btn ${isMapView ? 'tab-bar__btn--active' : ''}`}
           onClick={() => setActiveId('map')}
           style={{ borderRadius: 'var(--radius-md)', border: isMapView ? 'none' : '1px solid var(--border)' }}
         >
-          Mapa de equipos
+          Vista general
         </button>
         {players.map((p) => (
           <button
             key={p.id}
-            className={`tab-bar__btn ${activeId === p.id ? '' : ''}`}
             onClick={() => setActiveId(p.id)}
             style={{
               borderRadius: 'var(--radius-md)',
-              border: activeId === p.id ? `1px solid ${TEAMS[p.team].color}` : '1px solid var(--border)',
+              border: activeId === p.id ? `1px solid ${GOLD}` : '1px solid var(--border)',
               background: activeId === p.id ? 'var(--bg-surface)' : 'transparent',
               color: activeId === p.id ? 'var(--text-primary)' : 'var(--text-muted)',
+              padding: '0.2rem 0.6rem',
+              fontSize: '0.75rem',
+              cursor: 'pointer',
             }}
           >
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: TEAMS[p.team].color, display: 'inline-block', marginRight: 6 }} />
-            {p.name}
+            {ROLE_MAP[p.role]?.icon || '❓'} {p.name}
           </button>
         ))}
       </div>
 
       {/* ── Context bar ── */}
-      <div className="flex items-center justify-between gap-2 mb-2" style={{ minHeight: '1.75rem' }}>
+      <div className="flex items-center gap-2 mb-2" style={{ minHeight: '1.75rem' }}>
         <div className="mono text-xs text-faint">
           {isMapView ? (
-            players.length > 0 && `Dorado = scrim posible (ambos equipos con ${threshold}+)`
+            players.length > 0 && `Dorado = ${threshold}+ jugadores disponibles`
+          ) : isEditable ? (
+            <>Pintando disponibilidad de <span style={{ color: GOLD }}>{activePlayer.name}</span> — clic o arrastra</>
           ) : (
-            isEditable ? (
-              <>Pintando tu disponibilidad como <span style={{ color: TEAMS[activePlayer.team].color }}>{activePlayer.name}</span> — clic o arrastra</>
-            ) : (
-              <span style={{ color: 'var(--red-bright)', fontWeight: 'bold' }}>
-                ⚠️ Solo lectura: Estás viendo el horario de {activePlayer.name}
-              </span>
-            )
+            <span style={{ color: 'var(--red-bright)', fontWeight: 'bold' }}>
+              ⚠️ Solo lectura: viendo el horario de {activePlayer.name}
+            </span>
           )}
         </div>
-        {isMapView && players.length > 0 && (
-          <div className="toggle-group">
-            {[['ambos', 'Ambos', GOLD], ['azul', 'Azul', TEAMS.azul.color], ['rojo', 'Rojo', TEAMS.rojo.color]].map(([v, label, c]) => (
-              <button
-                key={v}
-                className={`toggle-group__btn ${mapView === v ? 'toggle-group__btn--active' : ''}`}
-                style={mapView === v ? { background: c, color: '#0b1220' } : {}}
-                onClick={() => setMapView(v)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* ── Grid ── */}
@@ -698,21 +604,18 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWi
                 key={i}
                 i={i}
                 isMapView={isMapView}
-                mapView={mapView}
                 activePlayer={activePlayer}
                 countOf={countOf}
-                cellData={cellData}
                 threshold={threshold}
                 onCellDown={onCellDown}
                 onCellEnter={onCellEnter}
               />
             ))}
           </div>
-          {isMapView && mapView === 'ambos' && (
+          {isMapView && (
             <div className="grid-legend">
-              <span><span className="grid-legend__swatch" style={{ background: TEAMS.azul.color }} />Izq: Azul</span>
-              <span><span className="grid-legend__swatch" style={{ background: TEAMS.rojo.color }} />Der: Rojo</span>
-              <span><span className="grid-legend__swatch" style={{ background: GOLD }} />Scrim posible</span>
+              <span><span className="grid-legend__swatch" style={{ background: 'rgba(201,170,113,0.35)' }} />Disponibles</span>
+              <span><span className="grid-legend__swatch" style={{ background: GOLD }} />{threshold}+ jugadores</span>
             </div>
           )}
         </div>
@@ -730,15 +633,15 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWi
         />
       )}
 
-      {/* ── Scrim windows ── */}
+      {/* ── Ventanas del equipo ── */}
       {players.length > 0 && (
         <div className="mt-8">
-          <h2 className="section-header text-gold">Scrims posibles · ambos equipos con {threshold}+</h2>
-          {scrimWindows.length === 0 ? (
-            <p className="text-sm text-muted">Aún no hay bloques donde ambos equipos lleguen a {threshold} jugadores a la vez.</p>
+          <h2 className="section-header text-gold">Ventanas del equipo · {threshold}+ jugadores</h2>
+          {windows.length === 0 ? (
+            <p className="text-sm text-muted">No hay bloques con {threshold}+ jugadores disponibles a la vez. Ajusta el umbral o completa los horarios.</p>
           ) : (
             <div className="flex flex-col gap-2">
-              {scrimWindows.map((w, idx) => (
+              {windows.map((w, idx) => (
                 <div key={idx} className={`window-card ${idx === 0 ? 'window-card--best' : ''}`}>
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div>
@@ -749,41 +652,11 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWi
                     </div>
                     {idx === 0 && <span className="chip chip--gold chip--sm uppercase">Mejor bloque</span>}
                   </div>
-                  <div className="two-col mt-2">
-                    {TEAM_IDS.map((t) => <RosterLine key={t} team={t} detail={w[t]} />)}
-                  </div>
+                  <WindowRosterLine detail={w.detail} />
                 </div>
               ))}
             </div>
           )}
-        </div>
-      )}
-
-      {/* ── Per-team windows ── */}
-      {players.length > 0 && (
-        <div className="two-col mt-8">
-          {TEAM_IDS.map((t) => (
-            <div key={t}>
-              <h2 className="section-header" style={{ color: TEAMS[t].text }}>
-                Ventanas {TEAMS[t].name} · {threshold}+
-              </h2>
-              {teamWindows[t].length === 0 ? (
-                <p className="text-sm text-muted">Sin bloques de {threshold}+ jugadores todavía.</p>
-              ) : (
-                <div className="flex flex-col gap-2">
-                  {teamWindows[t].map((w, idx) => (
-                    <div key={idx} className="window-card" style={{ borderColor: idx === 0 ? TEAMS[t].color : undefined }}>
-                      <div className="window-card__time">
-                        {DAYS[w.day]} · {fmt(slotHour(w.start))}–{fmt((slotHour(w.end) + 1) % 24)}
-                        <span className="window-card__duration">{w.end - w.start + 1}h</span>
-                      </div>
-                      <RosterLine team={t} detail={w.detail} />
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
         </div>
       )}
     </div>
@@ -794,20 +667,18 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, teamWi
    GRID ROW
    ═══════════════════════════════════════════════════════════════════ */
 
-function GridRow({ i, isMapView, mapView, activePlayer, countOf, cellData, threshold, onCellDown, onCellEnter }) {
+function GridRow({ i, isMapView, activePlayer, countOf, threshold, onCellDown, onCellEnter }) {
   const h = slotHour(i);
   return (
     <>
       <div className="grid-hour">{fmt(h)}</div>
       {Array.from({ length: 7 }, (_, d) => {
         const key = `${d}-${i}`;
-        const a = countOf(key, 'azul');
-        const r = countOf(key, 'rojo');
+        const n = countOf(key);
 
         // Player painting mode
         if (!isMapView) {
           const on = !!activePlayer.avail?.[key];
-          const T = TEAMS[activePlayer.team];
           return (
             <div
               key={key}
@@ -815,78 +686,47 @@ function GridRow({ i, isMapView, mapView, activePlayer, countOf, cellData, thres
               onPointerEnter={() => onCellEnter(key)}
               className="grid-cell"
               style={{
-                background: on ? T.color : 'rgba(148,163,184,0.04)',
+                background: on ? GOLD : 'rgba(148,163,184,0.04)',
                 boxShadow: on ? 'inset 0 0 0 1px rgba(255,255,255,0.25)' : 'inset 0 0 0 1px rgba(148,163,184,0.08)',
               }}
             />
           );
         }
 
-        const names = cellData[key];
-        const title = `Azul ${a}${names?.azul?.length ? ` (${names.azul.join(', ')})` : ''} · Rojo ${r}${names?.rojo?.length ? ` (${names.rojo.join(', ')})` : ''}`;
-
-        // Single team view
-        if (mapView !== 'ambos') {
-          const t = mapView;
-          const n = t === 'azul' ? a : r;
-          const T = TEAMS[t];
-          const quorum = n >= threshold;
-          const alpha = n === 0 ? 0 : 0.15 + 0.6 * Math.min(1, n / threshold);
-          return (
-            <div
-              key={key}
-              title={title}
-              className="grid-cell"
-              style={{
-                background: quorum ? GOLD : n === 0 ? 'rgba(148,163,184,0.04)' : `rgba(${T.rgb},${alpha.toFixed(2)})`,
-                boxShadow: quorum ? `inset 0 0 0 1px ${GOLD_BRIGHT}, 0 0 10px rgba(201,170,113,0.5)` : 'inset 0 0 0 1px rgba(148,163,184,0.08)',
-              }}
-            >
-              {n > 0 && (
-                <span className="grid-cell__count" style={{ color: quorum ? '#1c1306' : '#f1f5f9' }}>{n}</span>
-              )}
-            </div>
-          );
-        }
-
-        // Combined view
-        const scrim = a >= threshold && r >= threshold;
-        const alphaA = a === 0 ? 0.03 : 0.15 + 0.6 * Math.min(1, a / threshold);
-        const alphaR = r === 0 ? 0.03 : 0.15 + 0.6 * Math.min(1, r / threshold);
+        // Map view — single team
+        const quorum = n >= threshold;
+        const alpha = n === 0 ? 0 : 0.15 + 0.6 * Math.min(1, n / threshold);
         return (
           <div
             key={key}
-            title={title}
-            className={`grid-cell grid-cell--split ${scrim ? 'grid-cell--scrim' : ''}`}
+            title={n > 0 ? `${n} jugador${n === 1 ? '' : 'es'} disponibles` : ''}
+            className="grid-cell"
             style={{
-              boxShadow: scrim ? `inset 0 0 0 1.5px ${GOLD}, 0 0 10px rgba(201,170,113,0.5)` : 'inset 0 0 0 1px rgba(148,163,184,0.08)',
+              background: quorum ? GOLD : n === 0 ? 'rgba(148,163,184,0.04)' : `rgba(201,170,113,${alpha.toFixed(2)})`,
+              boxShadow: quorum ? `inset 0 0 0 1px ${GOLD_BRIGHT}, 0 0 10px rgba(201,170,113,0.5)` : 'inset 0 0 0 1px rgba(148,163,184,0.08)',
             }}
           >
-            <div style={{ background: `rgba(${TEAMS.azul.rgb},${alphaA.toFixed(2)})` }}>
-              {a > 0 && <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#f1f5f9' }}>{a}</span>}
-            </div>
-            <div style={{ background: `rgba(${TEAMS.rojo.rgb},${alphaR.toFixed(2)})` }}>
-              {r > 0 && <span className="mono" style={{ fontSize: '0.55rem', fontWeight: 700, color: '#f1f5f9' }}>{r}</span>}
-            </div>
+            {n > 0 && (
+              <span className="grid-cell__count" style={{ color: quorum ? '#1c1306' : '#f1f5f9' }}>{n}</span>
+            )}
           </div>
         );
+
       })}
     </>
   );
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   ROSTER LINE
+   WINDOW ROSTER LINE
    ═══════════════════════════════════════════════════════════════════ */
 
-function RosterLine({ team, detail }) {
-  const T = TEAMS[team];
+function WindowRosterLine({ detail }) {
   return (
     <div className="window-card__roster">
-      <span className="font-semibold" style={{ color: T.text }}>{T.short}: </span>
       {detail.full.length > 0
         ? <span className="text-primary">{detail.full.join(', ')}</span>
-        : <span className="text-muted">nadie todo el bloque</span>}
+        : <span className="text-muted">nadie disponible todo el bloque</span>}
       {detail.partial.length > 0 && (
         <span className="text-faint"> · parcial: {detail.partial.join(', ')}</span>
       )}
@@ -903,14 +743,14 @@ function PlayerDetail({ player, champions, onRoleChange, onAddToPool, onRemoveFr
   const isEditable = sessionPlayerId === player.id;
 
   return (
-    <div className="card mt-4" style={{ borderColor: TEAMS[player.team].border }}>
+    <div className="card mt-4" style={{ borderColor: 'var(--border-gold)' }}>
       <div className="card__header">
         <div className="flex items-center gap-2">
-          <span style={{ color: TEAMS[player.team].text, fontWeight: 600 }}>
+          <span style={{ color: 'var(--gold-bright)', fontWeight: 600 }}>
             {ROLE_MAP[player.role]?.icon} {player.name}
           </span>
-          <span className="chip chip--sm" style={{ background: TEAMS[player.team].chip, borderColor: TEAMS[player.team].border, color: TEAMS[player.team].text }}>
-            {TEAMS[player.team].short}
+          <span className="chip chip--sm">
+            {ROLE_MAP[player.role]?.name || player.role}
           </span>
           {!isEditable && (
             <span className="text-[10px]" style={{ color: 'var(--red-bright)' }}>
@@ -2160,13 +2000,10 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
   const stats = useMemo(() => {
     const result = {};
 
-    // Hours per team
-    for (const t of TEAM_IDS) {
-      const teamPlayers = players.filter((p) => p.team === t);
-      let totalHours = 0;
-      for (const p of teamPlayers) totalHours += Object.keys(p.avail || {}).length;
-      result[`hours_${t}`] = totalHours;
-    }
+    // Total hours available
+    let totalHours = 0;
+    for (const p of players) totalHours += Object.keys(p.avail || {}).length;
+    result.totalHours = totalHours;
 
     // Most/least available
     let most = null, least = null;
@@ -2178,13 +2015,12 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
     result.mostAvailable = most;
     result.leastAvailable = least;
 
-    // Peak hour — hour with most players available (across all teams)
+    // Peak hour — hour with most players available
     const hourCounts = {};
     for (let i = 0; i < NUM_SLOTS; i++) {
       let total = 0;
       for (let d = 0; d < 7; d++) {
-        const key = `${d}-${i}`;
-        total += (cellData[key]?.azul?.length || 0) + (cellData[key]?.rojo?.length || 0);
+        total += countOf(`${d}-${i}`);
       }
       hourCounts[i] = total;
     }
@@ -2192,22 +2028,20 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
     result.peakHour = peakSlot ? fmt(slotHour(parseInt(peakSlot[0]))) : '—';
     result.peakCount = peakSlot ? peakSlot[1] : 0;
 
-    // Overlap rate
-    let overlapSlots = 0, totalSlots = NUM_SLOTS * 7;
+    // Quorum rate (% of slots with threshold+ players)
+    let quorumSlots = 0, totalSlots = NUM_SLOTS * 7;
     for (let d = 0; d < 7; d++) {
       for (let i = 0; i < NUM_SLOTS; i++) {
-        const key = `${d}-${i}`;
-        if (countOf(key, 'azul') >= threshold && countOf(key, 'rojo') >= threshold) overlapSlots++;
+        if (countOf(`${d}-${i}`) >= threshold) quorumSlots++;
       }
     }
-    result.overlapRate = totalSlots > 0 ? Math.round((overlapSlots / totalSlots) * 100) : 0;
+    result.overlapRate = totalSlots > 0 ? Math.round((quorumSlots / totalSlots) * 100) : 0;
 
     // Best day
     const dayCounts = DAYS.map((_, d) => {
       let count = 0;
       for (let i = 0; i < NUM_SLOTS; i++) {
-        const key = `${d}-${i}`;
-        if (countOf(key, 'azul') >= threshold && countOf(key, 'rojo') >= threshold) count++;
+        if (countOf(`${d}-${i}`) >= threshold) count++;
       }
       return count;
     });
@@ -2238,17 +2072,13 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
   // Availability chart data (hours for chart)
   const chartData = useMemo(() => {
     return Array.from({ length: NUM_SLOTS }, (_, i) => {
-      let blue = 0, red = 0;
-      for (let d = 0; d < 7; d++) {
-        const key = `${d}-${i}`;
-        blue += cellData[key]?.azul?.length || 0;
-        red += cellData[key]?.rojo?.length || 0;
-      }
-      return { hour: fmt(slotHour(i)), blue, red };
+      let total = 0;
+      for (let d = 0; d < 7; d++) total += countOf(`${d}-${i}`);
+      return { hour: fmt(slotHour(i)), total };
     });
-  }, [cellData]);
+  }, [countOf]);
 
-  const maxChart = Math.max(...chartData.map((d) => Math.max(d.blue, d.red)), 1);
+  const maxChart = Math.max(...chartData.map((d) => d.total), 1);
 
   return (
     <div>
@@ -2256,14 +2086,9 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
 
       <div className="stats-grid mb-6">
         <div className="stat-card">
-          <span className="stat-card__label">Horas Azul / semana</span>
-          <span className="stat-card__value" style={{ color: 'var(--blue-text)' }}>{stats.hours_azul}</span>
-          <span className="stat-card__detail">horas totales marcadas</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Horas Rojo / semana</span>
-          <span className="stat-card__value" style={{ color: 'var(--red-text)' }}>{stats.hours_rojo}</span>
-          <span className="stat-card__detail">horas totales marcadas</span>
+          <span className="stat-card__label">Horas totales / semana</span>
+          <span className="stat-card__value">{stats.totalHours}</span>
+          <span className="stat-card__detail">horas marcadas en el equipo</span>
         </div>
         <div className="stat-card">
           <span className="stat-card__label">Hora pico</span>
@@ -2271,14 +2096,14 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
           <span className="stat-card__detail">{stats.peakCount} apariciones en la semana</span>
         </div>
         <div className="stat-card">
-          <span className="stat-card__label">Tasa de overlap</span>
+          <span className="stat-card__label">Disponibilidad con {threshold}+</span>
           <span className="stat-card__value">{stats.overlapRate}%</span>
-          <span className="stat-card__detail">slots con scrim posible</span>
+          <span className="stat-card__detail">slots con quórum de jugadores</span>
         </div>
         <div className="stat-card">
           <span className="stat-card__label">Mejor día</span>
           <span className="stat-card__value">{stats.bestDay}</span>
-          <span className="stat-card__detail">más horas de scrim posible</span>
+          <span className="stat-card__detail">más horas con {threshold}+ jugadores</span>
         </div>
         <div className="stat-card">
           <span className="stat-card__label">Más disponible</span>
@@ -2302,7 +2127,7 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
           <span className="stat-card__label">Scrims jugados</span>
           <span className="stat-card__value">{stats.totalScrims}</span>
           <span className="stat-card__detail">
-            {stats.totalScrims > 0 ? `🔵 ${stats.winsAzul}W · 🔴 ${stats.winsRojo}W` : 'sin datos'}
+            {stats.totalScrims > 0 ? `Azul ${stats.winsAzul}W · Rojo ${stats.winsRojo}W` : 'sin datos'}
           </span>
         </div>
         <div className="stat-card">
@@ -2328,15 +2153,11 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
               <div className="bar-row__track">
                 <div
                   className="bar-row__fill bar-row__fill--blue"
-                  style={{ width: `${(d.blue / maxChart) * 50}%` }}
-                />
-                <div
-                  className="bar-row__fill bar-row__fill--red"
-                  style={{ width: `${(d.red / maxChart) * 50}%` }}
+                  style={{ width: `${(d.total / maxChart) * 100}%` }}
                 />
               </div>
-              <span className="mono text-xs text-faint" style={{ width: 50, fontSize: '0.55rem' }}>
-                {d.blue}B / {d.red}R
+              <span className="mono text-xs text-faint" style={{ width: 30, fontSize: '0.55rem' }}>
+                {d.total}
               </span>
             </div>
           ))}
@@ -2436,89 +2257,281 @@ function ExportImportModal({ onClose, onExportJSON, onCopyDiscord, onImport }) {
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   PORTAL VIEW (Supabase Collaborative Team Sign-In)
+   GLOBAL AUTH SCREEN — Login / Register de cuenta global
    ═══════════════════════════════════════════════════════════════════ */
 
-function PortalView({
-  joinCode, setJoinCode,
-  createCode, setCreateCode,
-  createName, setCreateName,
-  loading, onJoin, onCreate, onLocal
-}) {
+function GlobalAuthScreen({ onLogin, onRegister }) {
+  const [activeTab, setActiveTab] = useState('login');
+  const [name, setName] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handle = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (!name.trim()) { setError('El nombre no puede estar vacío.'); return; }
+    if (password.length < 3) { setError('La contraseña debe tener al menos 3 caracteres.'); return; }
+    setLoading(true);
+    try {
+      if (activeTab === 'login') await onLogin(name, password);
+      else await onRegister(name, password);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
-    <div className="flex items-center justify-center min-h-screen" style={{ padding: '1rem', background: 'var(--bg-deepest)', minHeight: '100vh', width: '100vw', boxSizing: 'border-box' }}>
-      <div className="card" style={{ maxWidth: '650px', width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
-        
-        {/* Title branding */}
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '1rem', background: 'var(--bg-deepest)', boxSizing: 'border-box' }}>
+      <div className="card" style={{ maxWidth: 420, width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
         <div className="text-center mb-6">
-          <div className="mono text-xs uppercase text-gold font-bold mb-1" style={{ letterSpacing: '0.25em' }}>League Planner</div>
-          <h1 className="font-bold text-3xl mb-2" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>Lobby de Equipos</h1>
-          <p className="text-sm text-muted max-w-md mx-auto">
-            Únete a tu equipo para colaborar y sincronizar horarios, pools y composiciones en tiempo real, o trabaja de forma local sin conexión.
-          </p>
+          <div className="mono text-xs uppercase font-bold mb-1" style={{ letterSpacing: '0.25em', color: 'var(--gold-primary)' }}>League Planner</div>
+          <h1 className="font-bold text-2xl mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>Acceso de Invocador</h1>
+          <p className="text-xs text-muted">Crea una cuenta o inicia sesión para acceder a tu equipo.</p>
         </div>
 
-        {/* Action columns */}
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '2rem' }}>
-          
-          {/* Join team */}
-          <div className="portal-join-col" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', borderRight: '1px solid var(--border)', paddingRight: '1rem' }}>
-            <h3 className="font-semibold text-gold mb-1" style={{ fontSize: '0.95rem', borderBottom: '1px solid var(--border-gold)', paddingBottom: '0.25rem' }}>🔵 Unirse a Equipo</h3>
-            <form onSubmit={onJoin} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <label className="text-xs text-faint">Código de equipo existente</label>
-                <input
-                  className="input input--rect text-sm"
-                  value={joinCode}
-                  onChange={(e) => setJoinCode(e.target.value)}
-                  placeholder="Ej: udp-scrims"
-                  disabled={loading}
-                />
-              </div>
-              <button className="btn btn--blue btn--sm w-full mt-2" type="submit" disabled={loading} style={{ padding: '0.5rem' }}>
-                {loading ? 'Ingresando...' : 'Unirse al Equipo'}
-              </button>
-            </form>
-          </div>
-
-          {/* Create team */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <h3 className="font-semibold text-gold mb-1" style={{ fontSize: '0.95rem', borderBottom: '1px solid var(--border-gold)', paddingBottom: '0.25rem' }}>🔴 Registrar Nuevo Equipo</h3>
-            <form onSubmit={onCreate} style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <label className="text-xs text-faint">Código único (letras y guiones)</label>
-                <input
-                  className="input input--rect text-sm"
-                  value={createCode}
-                  onChange={(e) => setCreateCode(e.target.value)}
-                  placeholder="Ej: team-invictus"
-                  disabled={loading}
-                />
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <label className="text-xs text-faint">Nombre visible de tu equipo</label>
-                <input
-                  className="input input--rect text-sm"
-                  value={createName}
-                  onChange={(e) => setCreateName(e.target.value)}
-                  placeholder="Ej: Invictus Gaming"
-                  disabled={loading}
-                />
-              </div>
-              <button className="btn btn--gold btn--sm w-full mt-2" type="submit" disabled={loading} style={{ padding: '0.5rem' }}>
-                {loading ? 'Creando...' : 'Crear y Registrar'}
-              </button>
-            </form>
-          </div>
-
+        <div style={{ display: 'flex', marginBottom: '1.25rem' }}>
+          {[['login', 'Iniciar Sesión'], ['register', 'Crear Cuenta']].map(([id, label]) => (
+            <button key={id}
+              style={activeTab === id
+                ? { flex: 1, padding: '0.5rem', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700, border: 'none', cursor: 'pointer', borderRadius: id === 'login' ? '6px 0 0 6px' : '0 6px 6px 0', fontSize: '0.85rem' }
+                : { flex: 1, padding: '0.5rem', background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'pointer', borderRadius: id === 'login' ? '6px 0 0 6px' : '0 6px 6px 0', fontSize: '0.85rem' }}
+              onClick={() => { setActiveTab(id); setError(''); }}
+            >{label}</button>
+          ))}
         </div>
 
-        {/* Footer offline link */}
-        <div className="text-center mt-6 pt-4" style={{ borderTop: '1px solid var(--border)' }}>
-          <button className="btn btn--outline btn--sm" onClick={onLocal} disabled={loading}>
-            📴 Continuar en Modo Local (Sin Conexión)
+        <form onSubmit={handle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <label className="text-xs text-faint">Nombre de Invocador</label>
+            <input className="input w-full" value={name} onChange={e => { setName(e.target.value); setError(''); }}
+              placeholder="Ej: Faker" autoComplete="username" />
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+            <label className="text-xs text-faint">Contraseña / PIN</label>
+            <input type="password" className="input w-full" value={password}
+              onChange={e => { setPassword(e.target.value); setError(''); }}
+              placeholder="Mínimo 3 caracteres…"
+              autoComplete={activeTab === 'login' ? 'current-password' : 'new-password'} />
+          </div>
+          {error && <p className="text-xs" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
+          <button className="btn btn--gold w-full" type="submit" disabled={loading}>
+            {loading ? 'Procesando…' : activeTab === 'login' ? 'Entrar' : 'Crear Cuenta'}
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   TEAM DIRECTORY SCREEN — Buscar/crear equipo
+   ═══════════════════════════════════════════════════════════════════ */
+
+function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onCreateTeam, onLogout }) {
+  const [myTeams, setMyTeams] = useState([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [pendingRequests, setPendingRequests] = useState([]);
+  const [createName, setCreateName] = useState('');
+  const [createRole, setCreateRole] = useState('mid');
+  const [joinGameRole, setJoinGameRole] = useState('mid');
+  const [joinMessage, setJoinMessage] = useState('');
+  const [selectedTeam, setSelectedTeam] = useState(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [activeSection, setActiveSection] = useState('mine');
+
+  useEffect(() => {
+    Promise.all([
+      getUserTeams(currentUserId),
+      getUserPendingRequests(currentUserId),
+    ]).then(([teams, requests]) => {
+      setMyTeams(teams);
+      setPendingRequests(requests);
+    }).catch(() => {});
+  }, [currentUserId]);
+
+  const doSearch = async (q) => {
+    setSearchQuery(q);
+    if (!q.trim()) { setSearchResults([]); return; }
+    try {
+      const results = await searchPublicTeams(q);
+      setSearchResults(results);
+    } catch { setSearchResults([]); }
+  };
+
+  const handleCreate = async (e) => {
+    e.preventDefault();
+    if (!createName.trim()) { setError('El nombre del equipo no puede estar vacío.'); return; }
+    setLoading(true); setError('');
+    try {
+      await onCreateTeam(createName, createRole);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleJoinRequest = async (e) => {
+    e.preventDefault();
+    if (!selectedTeam) return;
+    setLoading(true); setError('');
+    try {
+      await requestJoinTeam(currentUserId, selectedTeam.id, joinGameRole, joinMessage);
+      setSelectedTeam(null);
+      const requests = await getUserPendingRequests(currentUserId);
+      setPendingRequests(requests);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const statusColor = { pending: 'var(--gold-primary)', accepted: 'var(--green-text)', rejected: 'var(--red-text)' };
+  const statusLabel = { pending: '⏳ Pendiente', accepted: '✓ Aceptado', rejected: '✕ Rechazado' };
+  const sectionBtnStyle = (id) => activeSection === id
+    ? { flex: 1, padding: '0.4rem 0.5rem', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '0.75rem' }
+    : { flex: 1, padding: '0.4rem 0.5rem', background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.75rem' };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '1rem', background: 'var(--bg-deepest)', boxSizing: 'border-box' }}>
+      <div className="card" style={{ maxWidth: 560, width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
+
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+          <div>
+            <div className="mono text-xs uppercase font-bold" style={{ letterSpacing: '0.2em', color: 'var(--gold-primary)' }}>League Planner</div>
+            <h2 className="font-bold text-xl" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
+              Bienvenido, {currentUserName}
+            </h2>
+          </div>
+          <button onClick={onLogout} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.3rem 0.7rem', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem' }}>
+            Cerrar sesión
           </button>
         </div>
+
+        <div style={{ display: 'flex', marginBottom: '1.25rem' }}>
+          {[['mine', 'Mis Equipos'], ['search', 'Buscar'], ['create', 'Crear']].map(([id, label], i, arr) => (
+            <button key={id} style={{ ...sectionBtnStyle(id), borderRadius: i === 0 ? '6px 0 0 6px' : i === arr.length - 1 ? '0 6px 6px 0' : '0' }}
+              onClick={() => { setActiveSection(id); setError(''); setSelectedTeam(null); }}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {error && <p className="text-xs mb-3" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
+
+        {activeSection === 'mine' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {myTeams.length === 0 ? (
+              <p className="text-sm text-muted text-center" style={{ padding: '1rem 0' }}>No estás en ningún equipo todavía.</p>
+            ) : myTeams.map(t => (
+              <div key={t.teamId} style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)', cursor: 'pointer' }}
+                onClick={() => onSelectTeam(t.teamId, t.teamName, t.teamRole)}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t.teamName}</span>
+                    <span className="text-xs text-muted" style={{ marginLeft: '0.5rem' }}>
+                      · {ROLE_MAP[t.gameRole]?.icon} {ROLE_MAP[t.gameRole]?.name || t.gameRole}
+                    </span>
+                  </div>
+                  <span style={t.teamRole === 'captain'
+                    ? { fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '999px', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700 }
+                    : { fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '999px', background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                    {t.teamRole === 'captain' ? '👑 Capitán' : t.teamRole}
+                  </span>
+                </div>
+              </div>
+            ))}
+
+            {pendingRequests.length > 0 && (
+              <div style={{ marginTop: '1rem' }}>
+                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                  Solicitudes enviadas
+                </div>
+                {pendingRequests.map(r => (
+                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+                    <span style={{ fontSize: '0.875rem' }}>{r.teamName}</span>
+                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: statusColor[r.status] || 'var(--text-muted)' }}>
+                      {statusLabel[r.status] || r.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {activeSection === 'search' && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            <input className="input w-full" placeholder="Buscar por nombre de equipo…"
+              value={searchQuery} onChange={e => doSearch(e.target.value)} />
+            {searchResults.length === 0 && searchQuery.trim() && (
+              <p className="text-sm text-muted text-center">Sin resultados para "{searchQuery}".</p>
+            )}
+            {searchResults.map(t => (
+              <div key={t.id} style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <div>
+                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t.name}</span>
+                    <span className="text-xs text-muted" style={{ marginLeft: '0.5rem' }}>· {t.memberCount} miembro{t.memberCount === 1 ? '' : 's'}</span>
+                  </div>
+                  <button className="btn btn--gold btn--sm"
+                    onClick={() => setSelectedTeam(selectedTeam?.id === t.id ? null : t)}
+                    disabled={pendingRequests.some(r => r.teamId === t.id && r.status === 'pending')}>
+                    {pendingRequests.some(r => r.teamId === t.id && r.status === 'pending') ? 'Enviada' : selectedTeam?.id === t.id ? 'Cancelar' : 'Unirse'}
+                  </button>
+                </div>
+                {selectedTeam?.id === t.id && (
+                  <form onSubmit={handleJoinRequest} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <label className="text-xs text-faint">Tu rol en juego</label>
+                      <select className="input" value={joinGameRole} onChange={e => setJoinGameRole(e.target.value)}>
+                        {ROLES.map(r => <option key={r.id} value={r.id}>{r.icon} {r.name}</option>)}
+                      </select>
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                      <label className="text-xs text-faint">Mensaje (opcional)</label>
+                      <input className="input w-full" value={joinMessage} onChange={e => setJoinMessage(e.target.value)}
+                        placeholder="¿Por qué quieres unirte?" />
+                    </div>
+                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                      <button className="btn btn--gold btn--sm" type="submit" disabled={loading}>
+                        {loading ? 'Enviando…' : 'Enviar Solicitud'}
+                      </button>
+                      <button className="btn btn--ghost btn--sm" type="button" onClick={() => setSelectedTeam(null)}>Cancelar</button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+
+        {activeSection === 'create' && (
+          <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <label className="text-xs text-faint">Nombre del equipo</label>
+              <input className="input w-full" value={createName}
+                onChange={e => { setCreateName(e.target.value); setError(''); }}
+                placeholder="Ej: Team Invictus" />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+              <label className="text-xs text-faint">Tu rol en juego (como capitán)</label>
+              <select className="input w-full" value={createRole} onChange={e => setCreateRole(e.target.value)}>
+                {ROLES.map(r => <option key={r.id} value={r.id}>{r.icon} {r.name}</option>)}
+              </select>
+            </div>
+            <p className="text-xs text-muted">Serás el capitán. Podrás aceptar solicitudes de otros jugadores.</p>
+            <button className="btn btn--gold w-full" type="submit" disabled={loading}>
+              {loading ? 'Creando…' : '👑 Crear Equipo'}
+            </button>
+          </form>
+        )}
 
       </div>
     </div>
@@ -2526,212 +2539,144 @@ function PortalView({
 }
 
 /* ═══════════════════════════════════════════════════════════════════
-   PLAYER PORTAL VIEW (Profile Login & Registration Gate)
+   CAPTAIN PANEL — Solicitudes de unión y gestión de roster
    ═══════════════════════════════════════════════════════════════════ */
 
-function PlayerPortalView({
-  players, onLogin, onRegister, onSpectator, teamName, onExitTeam, isLocalMode
-}) {
-  const [activeTab, setActiveTab] = useState(players.length > 0 ? 'login' : 'register');
+function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, teamCode, currentUserId }) {
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState({});
+  const [acceptRole, setAcceptRole] = useState({});
 
-  // Login form state
-  const [loginPlayerId, setLoginPlayerId] = useState(players[0]?.id || '');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [loginError, setLoginError] = useState('');
-  const [loginLoading, setLoginLoading] = useState(false);
-
-  // Register form state
-  const [regName, setRegName] = useState('');
-  const [regTeam, setRegTeam] = useState('azul');
-  const [regRole, setRegRole] = useState('mid');
-  const [regPassword, setRegPassword] = useState('');
-  const [regError, setRegError] = useState('');
-  const [regLoading, setRegLoading] = useState(false);
-
-  // Keep dropdown in sync when players load
-  useEffect(() => {
-    if (players.length > 0 && !loginPlayerId) {
-      setLoginPlayerId(players[0].id);
+  const handleAccept = async (req, teamRole) => {
+    setLoading(l => ({ ...l, [req.id]: true }));
+    setError('');
+    try {
+      await acceptJoinRequest(req.id, req.userId, teamCode, req.gameRole, teamRole || 'player');
+      setJoinRequests(rs => rs.filter(r => r.id !== req.id));
+      setPlayers(ps => [...ps, {
+        id: `tm_${Date.now()}`,
+        userId: req.userId,
+        name: req.userName,
+        role: req.gameRole,
+        secondaryRole: '',
+        teamRole: teamRole || 'player',
+        avail: {},
+        pool: [],
+      }]);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(l => ({ ...l, [req.id]: false }));
     }
-  }, [players, loginPlayerId]);
-
-  const handleLoginSubmit = async (e) => {
-    e.preventDefault();
-    setLoginError('');
-    if (!loginPlayerId) { setLoginError('Selecciona un invocador.'); return; }
-    setLoginLoading(true);
-    const err = await onLogin(loginPlayerId, loginPassword);
-    setLoginLoading(false);
-    if (err) setLoginError(err);
   };
 
-  const handleRegisterSubmit = async (e) => {
-    e.preventDefault();
-    setRegError('');
-    const name = regName.trim();
-    const pwd = regPassword.trim();
-    if (!name) { setRegError('El nombre de invocador no puede estar vacío.'); return; }
-    if (pwd.length < 3) { setRegError('La contraseña debe tener al menos 3 caracteres.'); return; }
-    setRegLoading(true);
-    const err = await onRegister(name, regTeam, regRole, pwd);
-    setRegLoading(false);
-    if (err) setRegError(err);
+  const handleReject = async (reqId) => {
+    setLoading(l => ({ ...l, [reqId]: true }));
+    try {
+      await rejectJoinRequest(reqId);
+      setJoinRequests(rs => rs.filter(r => r.id !== reqId));
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(l => ({ ...l, [reqId]: false }));
+    }
+  };
+
+  const handleRemoveMember = async (p) => {
+    if (!window.confirm(`¿Expulsar a ${p.name} del equipo?`)) return;
+    try {
+      await removeMemberFromTeam(p.userId, teamCode);
+      setPlayers(ps => ps.filter(x => x.id !== p.id));
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   return (
-    <div className="flex items-center justify-center min-h-screen" style={{ padding: '1rem', background: 'var(--bg-deepest)', minHeight: '100vh', width: '100vw', boxSizing: 'border-box' }}>
-      <div className="card" style={{ maxWidth: '500px', width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
+    <div>
+      <h2 style={{ fontFamily: 'var(--font-display)', fontSize: '1.1rem', color: 'var(--gold-bright)', marginBottom: '1rem' }}>
+        Panel del Capitán
+      </h2>
 
-        {/* Title */}
-        <div className="text-center mb-6">
-          <div className="mono text-xs uppercase text-gold font-bold mb-1" style={{ letterSpacing: '0.25em' }}>League Planner</div>
-          <h2 className="font-bold text-2xl mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>Acceso de Invocador</h2>
-          <p className="text-xs text-muted">
-            Equipo: <span style={{ color: 'var(--gold-bright)' }}>{teamName}</span>
-          </p>
+      {error && <p className="text-xs mb-4" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
+
+      <div className="card mb-6">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+          <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>Solicitudes de Unión</span>
+          <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', borderRadius: '999px', background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+            {joinRequests.length}
+          </span>
         </div>
-
-        {/* Tab Selection */}
-        <div className="toggle-group mb-5 w-full" style={{ display: 'flex' }}>
-          <button
-            className={`toggle-group__btn ${activeTab === 'login' ? 'toggle-group__btn--active' : ''}`}
-            style={activeTab === 'login' ? { background: 'var(--gold-primary)', color: '#0b1220', flex: 1 } : { flex: 1 }}
-            onClick={() => { setActiveTab('login'); setLoginError(''); }}
-          >
-            Iniciar Sesión
-          </button>
-          <button
-            className={`toggle-group__btn ${activeTab === 'register' ? 'toggle-group__btn--active' : ''}`}
-            style={activeTab === 'register' ? { background: 'var(--gold-primary)', color: '#0b1220', flex: 1 } : { flex: 1 }}
-            onClick={() => { setActiveTab('register'); setRegError(''); }}
-          >
-            Registrarse
-          </button>
-        </div>
-
-        {/* Login Tab */}
-        {activeTab === 'login' ? (
-          <form onSubmit={handleLoginSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            {players.length === 0 ? (
-              <p className="text-xs text-muted text-center py-4">
-                No hay invocadores registrados en este equipo aún. ¡Regístrate en la pestaña de al lado!
-              </p>
-            ) : (
-              <>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                  <label className="text-xs text-faint">Selecciona tu Invocador</label>
-                  <select
-                    className="input w-full"
-                    value={loginPlayerId}
-                    onChange={(e) => setLoginPlayerId(e.target.value)}
-                  >
-                    {players.map((p) => (
-                      <option key={p.id} value={p.id}>
-                        {ROLE_MAP[p.role]?.icon || '❓'} {p.name} ({TEAMS[p.team]?.short || p.team})
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                  <label className="text-xs text-faint">Contraseña / PIN</label>
-                  <input
-                    type="password"
-                    className="input w-full"
-                    value={loginPassword}
-                    onChange={(e) => { setLoginPassword(e.target.value); setLoginError(''); }}
-                    placeholder="Escribe tu clave..."
-                    autoComplete="current-password"
-                  />
-                </div>
-                {loginError && (
-                  <p className="text-xs" style={{ color: 'var(--red-bright)', marginTop: '-0.5rem' }}>⚠ {loginError}</p>
-                )}
-                <button className="btn btn--gold w-full mt-2" type="submit" disabled={loginLoading}>
-                  {loginLoading ? 'Verificando…' : 'Entrar al Planificador'}
-                </button>
-              </>
-            )}
-          </form>
+        {joinRequests.length === 0 ? (
+          <p className="text-sm text-muted">No hay solicitudes pendientes.</p>
         ) : (
-          /* Register Tab */
-          <form onSubmit={handleRegisterSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <label className="text-xs text-faint">Nombre de Invocador</label>
-              <input
-                className="input w-full"
-                value={regName}
-                onChange={(e) => { setRegName(e.target.value); setRegError(''); }}
-                placeholder="Ej: Faker"
-                autoComplete="username"
-              />
-            </div>
-
-            <div className="register-row" style={{ display: 'flex', gap: '1rem', width: '100%' }}>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
-                <label className="text-xs text-faint">Bando / Equipo</label>
-                <div className="toggle-group w-full" style={{ display: 'flex' }}>
-                  {TEAM_IDS.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      className={`toggle-group__btn ${regTeam === t ? 'toggle-group__btn--active' : ''}`}
-                      style={regTeam === t ? { background: TEAMS[t].color, color: '#0b1220', flex: 1 } : { flex: 1 }}
-                      onClick={() => setRegTeam(t)}
-                    >
-                      {TEAMS[t].short}
-                    </button>
-                  ))}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            {joinRequests.map(req => (
+              <div key={req.id} style={{ padding: '0.75rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <div>
+                    <span style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{req.userName}</span>
+                    <span className="text-xs text-muted" style={{ marginLeft: '0.5rem' }}>
+                      · {ROLE_MAP[req.gameRole]?.icon} {ROLE_MAP[req.gameRole]?.name || req.gameRole}
+                    </span>
+                  </div>
+                </div>
+                {req.message && (
+                  <p className="text-xs text-muted mb-2" style={{ fontStyle: 'italic' }}>"{req.message}"</p>
+                )}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                  <select className="input" style={{ width: 'auto', fontSize: '0.75rem', padding: '0.2rem 0.5rem' }}
+                    value={acceptRole[req.id] || 'player'}
+                    onChange={e => setAcceptRole(r => ({ ...r, [req.id]: e.target.value }))}>
+                    <option value="player">Jugador</option>
+                    <option value="substitute">Suplente</option>
+                    <option value="coach">Coach</option>
+                    <option value="manager">Manager</option>
+                  </select>
+                  <button className="btn btn--gold btn--sm" disabled={loading[req.id]}
+                    onClick={() => handleAccept(req, acceptRole[req.id] || 'player')}>
+                    ✓ Aceptar
+                  </button>
+                  <button className="btn btn--ghost btn--sm" disabled={loading[req.id]}
+                    onClick={() => handleReject(req.id)}
+                    style={{ color: 'var(--red-text)' }}>
+                    ✕ Rechazar
+                  </button>
                 </div>
               </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', flex: 1 }}>
-                <label className="text-xs text-faint">Rol Principal</label>
-                <select
-                  className="input w-full"
-                  value={regRole}
-                  onChange={(e) => setRegRole(e.target.value)}
-                >
-                  {ROLES.map((r) => (
-                    <option key={r.id} value={r.id}>{r.icon} {r.name}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <label className="text-xs text-faint">Establecer Contraseña / PIN</label>
-              <input
-                type="password"
-                className="input w-full"
-                value={regPassword}
-                onChange={(e) => { setRegPassword(e.target.value); setRegError(''); }}
-                placeholder="Mínimo 3 caracteres…"
-                autoComplete="new-password"
-              />
-              <span className="text-[10px] text-muted">La usarás para modificar tu horario o pool de campeones.</span>
-            </div>
-
-            {regError && (
-              <p className="text-xs" style={{ color: 'var(--red-bright)', marginTop: '-0.5rem' }}>⚠ {regError}</p>
-            )}
-            <button className="btn btn--blue w-full mt-2" type="submit" disabled={regLoading}>
-              {regLoading ? 'Registrando…' : 'Registrarse y Entrar'}
-            </button>
-          </form>
+            ))}
+          </div>
         )}
+      </div>
 
-        {/* Spectator and Exit Actions */}
-        <div className="text-center mt-5 pt-4 flex flex-col gap-3" style={{ borderTop: '1px solid var(--border)' }}>
-          <button className="btn btn--outline btn--sm w-full" onClick={onSpectator}>
-            👓 Continuar como Espectador (Solo Lectura)
-          </button>
-          {!isLocalMode && (
-            <button className="btn btn--ghost btn--sm" onClick={onExitTeam} style={{ color: 'var(--red-text)', fontSize: '0.75rem' }}>
-              🚪 Salir del Equipo
-            </button>
-          )}
+      <div className="card">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+          <span style={{ fontWeight: 600, fontSize: '0.875rem' }}>Roster del Equipo</span>
+          <span style={{ fontSize: '0.75rem', padding: '0.1rem 0.5rem', borderRadius: '999px', background: 'var(--bg-panel)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}>
+            {players.length} miembros
+          </span>
         </div>
-
+        <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {players.map(p => (
+            <div key={p.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <span>{ROLE_MAP[p.role]?.icon || '❓'}</span>
+                <span style={{ color: 'var(--text-primary)', fontWeight: 500 }}>{p.name}</span>
+                <span style={p.teamRole === 'captain'
+                  ? { fontSize: '0.7rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700 }
+                  : { fontSize: '0.7rem', padding: '0.1rem 0.4rem', borderRadius: '999px', background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
+                  {p.teamRole === 'captain' ? '👑' : p.teamRole}
+                </span>
+              </div>
+              {p.userId !== currentUserId && p.teamRole !== 'captain' && (
+                <button onClick={() => handleRemoveMember(p)}
+                  style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.15rem 0.5rem', color: 'var(--red-text)', cursor: 'pointer', fontSize: '0.7rem' }}>
+                  Expulsar
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

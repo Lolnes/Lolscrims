@@ -890,13 +890,46 @@ export function getRegionFromSummonerName(summonerName) {
 }
 
 async function fetchRiotApi(url, apiKey) {
-  const proxies = [
-    `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  // 1. Intentar usar nuestro proxy privado de Vercel (/api/riot)
+  // Quitamos la api_key de la URL para que el proxy del servidor la inyecte de forma segura desde las variables de entorno
+  let cleanUrl = url;
+  try {
+    const urlObj = new URL(url);
+    urlObj.searchParams.delete('api_key');
+    cleanUrl = urlObj.toString();
+  } catch {}
+
+  try {
+    const vercelProxyUrl = `/api/riot?url=${encodeURIComponent(cleanUrl)}`;
+    const res = await fetch(vercelProxyUrl);
+    
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.status && data.status.status_code >= 400) {
+        const code = data.status.status_code;
+        if (code === 403) throw new Error('Riot API Key inválida o expirada.');
+        if (code === 404) throw new Error('Invocador o datos no encontrados.');
+        throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
+      }
+      return data;
+    }
+    
+    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
+    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
+    throw new Error(`HTTP ${res.status}`);
+  } catch (err) {
+    console.warn("Fallo al conectar con el proxy de Vercel (puede ser desarrollo local). Usando proxies de respaldo...", err);
+  }
+
+  // 2. Fallback para desarrollo local (re-añade api_key para usar proxies públicos)
+  const urlWithKey = url;
+  const publicProxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(urlWithKey)}`,
+    `https://corsproxy.io/?url=${encodeURIComponent(urlWithKey)}`
   ];
 
   let lastErr = null;
-  for (const proxiedUrl of proxies) {
+  for (const proxiedUrl of publicProxies) {
     try {
       const res = await fetch(proxiedUrl);
       if (!res.ok) {
@@ -912,13 +945,13 @@ async function fetchRiotApi(url, apiKey) {
         throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
       }
       return data;
-    } catch (err) {
-      console.warn(`Error al conectar mediante ${proxiedUrl}, intentando el siguiente proxy...`, err);
-      lastErr = err;
+    } catch (e) {
+      console.warn(`Fallo en proxy de respaldo ${proxiedUrl}:`, e);
+      lastErr = e;
     }
   }
 
-  throw new Error(`Error de conexión con la API de Riot: ${lastErr ? lastErr.message : 'Fallo en todos los proxies CORS'}`);
+  throw new Error(`Error de conexión con la API de Riot: ${lastErr ? lastErr.message : 'Fallo en todos los proxies'}`);
 }
 
 export async function fetchRealApexCutoffs(region, apiKey) {

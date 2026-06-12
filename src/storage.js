@@ -889,80 +889,67 @@ export function getRegionFromSummonerName(summonerName) {
   return getRiotRegionsFromTag(tag).region;
 }
 
-async function fetchRiotApi(url, apiKey) {
-  // 1. Intentar usar nuestro proxy privado de Vercel (/api/riot)
-  // Quitamos la api_key de la URL para que el proxy del servidor la inyecte de forma segura desde las variables de entorno
-  let cleanUrl = url;
-  try {
-    const urlObj = new URL(url);
-    urlObj.searchParams.delete('api_key');
-    cleanUrl = urlObj.toString();
-  } catch {}
-
-  try {
-    const vercelProxyUrl = `/api/riot?url=${encodeURIComponent(cleanUrl)}`;
-    const res = await fetch(vercelProxyUrl);
-    
-    if (res.ok) {
-      const data = await res.json();
-      if (data && data.status && data.status.status_code >= 400) {
-        const code = data.status.status_code;
-        if (code === 403) throw new Error('Riot API Key inválida o expirada.');
-        if (code === 404) throw new Error('Invocador o datos no encontrados.');
-        throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
-      }
-      return data;
-    }
-    
-    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
-    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
-    throw new Error(`HTTP ${res.status}`);
-  } catch (err) {
-    console.warn("Fallo al conectar con el proxy de Vercel (puede ser desarrollo local). Usando proxies de respaldo...", err);
+class RiotApiError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.code = code;
   }
-
-  // 2. Fallback para desarrollo local (re-añade api_key para usar proxies públicos)
-  const urlWithKey = url;
-  const publicProxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(urlWithKey)}`,
-    `https://corsproxy.io/?url=${encodeURIComponent(urlWithKey)}`
-  ];
-
-  let lastErr = null;
-  for (const proxiedUrl of publicProxies) {
-    try {
-      const res = await fetch(proxiedUrl);
-      if (!res.ok) {
-        if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
-        if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
-        throw new Error(`HTTP ${res.status}`);
-      }
-      const data = await res.json();
-      if (data && data.status && data.status.status_code >= 400) {
-        const code = data.status.status_code;
-        if (code === 403) throw new Error('Riot API Key inválida o expirada.');
-        if (code === 404) throw new Error('Invocador o datos no encontrados.');
-        throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
-      }
-      return data;
-    } catch (e) {
-      console.warn(`Fallo en proxy de respaldo ${proxiedUrl}:`, e);
-      lastErr = e;
-    }
-  }
-
-  throw new Error(`Error de conexión con la API de Riot: ${lastErr ? lastErr.message : 'Fallo en todos los proxies'}`);
 }
 
-export async function fetchRealApexCutoffs(region, apiKey) {
-  if (!apiKey) return { challenger: 1000, grandmaster: 500 };
+async function fetchRiotApi(url, _retried = false) {
+  // La API Key nunca vive en el cliente: el proxy (api/riot.js en Vercel,
+  // middleware de vite.config.js en desarrollo) la inyecta en el servidor.
+  const urlObj = new URL(url);
+  urlObj.searchParams.delete('api_key');
+
+  let res;
   try {
-    const chalUrl = `https://${region}.api.riotgames.com/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5?api_key=${apiKey}`;
-    const gmUrl = `https://${region}.api.riotgames.com/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5?api_key=${apiKey}`;
-    
+    res = await fetch(`/api/riot?url=${encodeURIComponent(urlObj.toString())}`);
+  } catch (err) {
+    throw new RiotApiError('No se pudo conectar con el proxy de Riot: ' + err.message, 'NETWORK');
+  }
+
+  let data = null;
+  try { data = await res.json(); } catch { /* respuesta no-JSON */ }
+
+  if (data && data.error === 'RIOT_KEY_MISSING') {
+    throw new RiotApiError('Riot API Key no configurada en el servidor.', 'RIOT_KEY_MISSING');
+  }
+
+  const code = res.ok ? (data?.status?.status_code || 0) : res.status;
+  if (code >= 400) {
+    if (code === 401 || code === 403) throw new RiotApiError('Riot API Key inválida o expirada.', 'FORBIDDEN');
+    if (code === 404) throw new RiotApiError('Invocador o datos no encontrados.', 'NOT_FOUND');
+    if (code === 429) {
+      // Docs de Riot: detener llamadas durante los segundos del header Retry-After
+      if (!_retried) {
+        const waitSec = Math.min(parseInt(res.headers.get('Retry-After'), 10) || 2, 15);
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        return fetchRiotApi(url, true);
+      }
+      throw new RiotApiError('Límite de peticiones de Riot alcanzado. Espera unos segundos y reintenta.', 'RATE_LIMIT');
+    }
+    throw new RiotApiError(`Riot API Error (${code}): ${data?.status?.message || data?.error || 'desconocido'}`, 'HTTP');
+  }
+  return data;
+}
+
+const CUTOFFS_TTL_MS = 6 * 60 * 60 * 1000; // 6 horas
+
+export async function fetchRealApexCutoffs(region) {
+  // Los cortes de Challenger/GM cambian lento: usar caché local si es reciente
+  try {
+    const cached = JSON.parse(localStorage.getItem(`lol-cutoffs-${region}`) || 'null');
+    if (cached && Date.now() - (cached.timestamp || 0) < CUTOFFS_TTL_MS) return cached;
+  } catch { /* caché corrupta, re-fetch */ }
+
+  try {
+    const chalUrl = `https://${region}.api.riotgames.com/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5`;
+    const gmUrl = `https://${region}.api.riotgames.com/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5`;
+
     const [chalLeague, gmLeague] = await Promise.all([
-      fetchRiotApi(chalUrl, apiKey),
-      fetchRiotApi(gmUrl, apiKey)
+      fetchRiotApi(chalUrl),
+      fetchRiotApi(gmUrl)
     ]);
     
     let chalMin = 1000;
@@ -1393,15 +1380,9 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     return { success: false, gamesAdded: 0, status: 'Supabase no configurado' };
   }
 
-  // Obtener la API Key desde las variables de entorno (.env / Vercel)
-  const apiKey = import.meta.env.VITE_RIOT_API_KEY || '';
-
-  // Si no hay API Key, usamos la simulación basada en tiempo transcurrido
-  if (!apiKey) {
-    return await syncUserGamesSimulated(userId, teamId, summonerName, isManual);
-  }
-
   // --- LOGICA DE RIOT API REAL ---
+  // Si el proxy del servidor no tiene API Key configurada, el primer fetch
+  // lanza RIOT_KEY_MISSING y caemos a la simulación (ver catch al final).
   const parts = summonerName.split('#');
   const gameName = parts[0];
   const tagLine = parts[1];
@@ -1414,19 +1395,14 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
 
   try {
     // 1. Obtener PUUID del Riot Account API
-    const accountUrl = `https://${routing}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}?api_key=${apiKey}`;
-    const account = await fetchRiotApi(accountUrl, apiKey);
+    const accountUrl = `https://${routing}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}`;
+    const account = await fetchRiotApi(accountUrl);
     const puuid = account.puuid;
 
-    // 2. Obtener datos básicos de Summoner (para conseguir el summoner ID necesario para ligas)
-    const summonerUrl = `https://${region}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${puuid}?api_key=${apiKey}`;
-    const summoner = await fetchRiotApi(summonerUrl, apiKey);
-    const summonerId = summoner.id;
+    // 2. Obtener liga (Elo) directamente por PUUID — evita la llamada extra a summoner-v4
+    const leagueUrl = `https://${region}.api.riotgames.com/lol/league/v4/entries/by-puuid/${puuid}`;
+    const leagueEntries = await fetchRiotApi(leagueUrl);
 
-    // 3. Obtener liga (Elo)
-    const leagueUrl = `https://${region}.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerId}?api_key=${apiKey}`;
-    const leagueEntries = await fetchRiotApi(leagueUrl, apiKey);
-    
     // Buscar la liga de SoloQ
     const soloQEntry = leagueEntries.find(e => e.queueType === 'RANKED_SOLO_5x5');
     let tier = 'UNRANKED';
@@ -1435,22 +1411,22 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     let lpValue = 0;
 
     if (soloQEntry) {
-      tier = soloQEntry.tier; 
-      division = soloQEntry.division; 
+      tier = soloQEntry.tier;
+      division = soloQEntry.rank || 'IV'; // Riot llama "rank" a la división (I-IV)
       lp = soloQEntry.leaguePoints;
       lpValue = rankToLp(tier, division, lp);
     }
 
     // Obtener y actualizar los cortes reales de Apex (Challenger/GM) para esta región
     try {
-      await fetchRealApexCutoffs(region, apiKey);
+      await fetchRealApexCutoffs(region);
     } catch (e) {
       console.error('Error al actualizar cortes reales en sync:', e);
     }
 
-    // 4. Obtener últimos 5 Match IDs
-    const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5&api_key=${apiKey}`;
-    const matchIds = await fetchRiotApi(matchesUrl, apiKey);
+    // 3. Obtener últimos 5 Match IDs
+    const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5`;
+    const matchIds = await fetchRiotApi(matchesUrl);
 
     // Obtener los IDs de las partidas que ya tenemos en la base de datos para no duplicar
     const { data: existingGames } = await supabase
@@ -1471,11 +1447,18 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
 
     const newGames = [];
 
-    // 5. Cargar detalles de cada partida nueva
-    for (const matchId of newMatchIds) {
-      const matchDetailUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/${matchId}?api_key=${apiKey}`;
-      const match = await fetchRiotApi(matchDetailUrl, apiKey);
-      
+    // 4. Cargar detalles de las partidas nuevas en paralelo (máx. 5)
+    const matchDetails = await Promise.all(
+      newMatchIds.map(matchId =>
+        fetchRiotApi(`https://${routing}.api.riotgames.com/lol/match/v5/matches/${matchId}`)
+          .catch(err => { console.warn(`No se pudo cargar la partida ${matchId}:`, err.message); return null; })
+      )
+    );
+
+    for (let mi = 0; mi < newMatchIds.length; mi++) {
+      const matchId = newMatchIds[mi];
+      const match = matchDetails[mi];
+
       if (!match || !match.info || !match.info.participants) continue;
 
       // Buscar al propio jugador en la partida
@@ -1578,6 +1561,10 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     };
 
   } catch (err) {
+    if (err.code === 'RIOT_KEY_MISSING') {
+      // Sin API Key en el servidor: usar la simulación basada en tiempo
+      return await syncUserGamesSimulated(userId, teamId, summonerName, isManual);
+    }
     console.error('Error al sincronizar con Riot API real', err);
     throw new Error('Error de Riot API: ' + err.message);
   }

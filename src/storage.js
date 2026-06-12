@@ -739,3 +739,115 @@ export function importJSON(jsonString) {
     threshold: typeof data.threshold === 'number' ? data.threshold : 5,
   };
 }
+
+// ═══════════════════════════════════════════════════════════
+// CAPTAIN TRANSFER
+// ═══════════════════════════════════════════════════════════
+
+export async function transferCaptain(teamId, newMemberUserId, currentCaptainUserId) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no está configurado');
+
+  // Quitar capitanía al actual
+  const { error: e1 } = await supabase
+    .from('team_members')
+    .update({ team_role: 'player' })
+    .eq('team_id', teamId)
+    .eq('user_id', currentCaptainUserId);
+  if (e1) throw new Error('Error al quitar capitanía: ' + e1.message);
+
+  // Dar capitanía al nuevo
+  const { error: e2 } = await supabase
+    .from('team_members')
+    .update({ team_role: 'captain' })
+    .eq('team_id', teamId)
+    .eq('user_id', newMemberUserId);
+  if (e2) throw new Error('Error al asignar capitanía: ' + e2.message);
+
+  // Actualizar teams.captain_id
+  const { error: e3 } = await supabase
+    .from('teams')
+    .update({ captain_id: newMemberUserId })
+    .eq('id', teamId);
+  if (e3) throw new Error('Error al actualizar capitán del equipo: ' + e3.message);
+}
+
+// ═══════════════════════════════════════════════════════════
+// SCRIM MATCHMAKING — Ventanas compartidas y solicitudes
+// ═══════════════════════════════════════════════════════════
+
+export async function getTeamWindows(teamId) {
+  if (!isSupabaseConfigured) return { windows: [], threshold: 5 };
+
+  const [{ data: teamInfo }, { data: members }] = await Promise.all([
+    supabase.from('teams').select('threshold').eq('id', teamId).maybeSingle(),
+    supabase.from('team_members')
+      .select('avail')
+      .eq('team_id', teamId)
+      .in('team_role', ['player', 'captain', 'substitute']),
+  ]);
+
+  const threshold = teamInfo?.threshold || 5;
+
+  // Contar disponibilidad por franja
+  const counts = {};
+  for (const m of (members || [])) {
+    for (const k of Object.keys(m.avail || {})) {
+      counts[k] = (counts[k] || 0) + 1;
+    }
+  }
+
+  // Encontrar runs
+  const runs = [];
+  for (let d = 0; d < 7; d++) {
+    let run = null;
+    for (let i = 0; i <= 16; i++) {
+      const ok = i < 16 && (counts[`${d}-${i}`] || 0) >= threshold;
+      if (ok) {
+        if (!run) run = { day: d, start: i, end: i };
+        else run.end = i;
+      } else if (run) {
+        runs.push(run);
+        run = null;
+      }
+    }
+  }
+
+  return { windows: runs, threshold, counts };
+}
+
+export async function sendScrimRequest(fromTeamId, toTeamId, day, slot, duration, message) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no configurado');
+  const id = `sr_${Date.now()}_${Math.random().toString(36).slice(2,6)}`;
+  const { error } = await supabase.from('scrim_requests').insert([{
+    id, from_team_id: fromTeamId, to_team_id: toTeamId,
+    day, slot, duration: duration || 1, message: message || '', status: 'pending',
+  }]);
+  if (error) throw new Error('Error al enviar solicitud: ' + error.message);
+}
+
+export async function loadIncomingScrimRequests(teamId) {
+  if (!isSupabaseConfigured) return [];
+  const { data } = await supabase
+    .from('scrim_requests')
+    .select('*, teams!scrim_requests_from_team_id_fkey(name)')
+    .eq('to_team_id', teamId)
+    .eq('status', 'pending')
+    .order('created_at');
+  if (!data) return [];
+  return data.map(r => ({
+    id: r.id,
+    fromTeamId: r.from_team_id,
+    fromTeamName: r.teams?.name || r.from_team_id,
+    day: r.day, slot: r.slot, duration: r.duration,
+    start: r.slot, end: r.slot + (r.duration || 1) - 1,
+    message: r.message,
+  }));
+}
+
+export async function respondScrimRequest(requestId, accepted) {
+  const status = accepted ? 'accepted' : 'rejected';
+  const { error } = await supabase
+    .from('scrim_requests').update({ status }).eq('id', requestId);
+  if (error) throw new Error('Error al responder: ' + error.message);
+}
+

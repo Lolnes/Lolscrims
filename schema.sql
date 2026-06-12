@@ -175,5 +175,29 @@ CREATE POLICY "anon_all_drafts"        ON drafts        FOR ALL TO anon USING (t
 CREATE POLICY "anon_all_scrims"        ON scrims        FOR ALL TO anon USING (true) WITH CHECK (true);
 
 -- ============================================================
+-- 10. FASE 2: Solicitudes de Scrim entre equipos
+-- ============================================================
+CREATE TABLE IF NOT EXISTS scrim_requests (
+  id           TEXT PRIMARY KEY,
+  from_team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  to_team_id   TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  day          INTEGER NOT NULL,       -- 0=Lun … 6=Dom
+  slot         INTEGER NOT NULL,       -- índice de franja (0..15, START_HOUR=10)
+  duration     INTEGER NOT NULL DEFAULT 1,  -- cantidad de franjas (generalmente 2-3h)
+  message      TEXT NOT NULL DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'pending',  -- pending|accepted|rejected|cancelled
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS scrim_requests_from_idx ON scrim_requests(from_team_id);
+CREATE INDEX IF NOT EXISTS scrim_requests_to_idx   ON scrim_requests(to_team_id);
+
+ALTER TABLE scrim_requests ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "anon_all_scrim_requests" ON scrim_requests;
+CREATE POLICY "anon_all_scrim_requests" ON scrim_requests FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- ============================================================
 -- Listo. La app crea filas al primer guardado.
 -- ============================================================
+

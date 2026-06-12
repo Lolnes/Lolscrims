@@ -18,6 +18,8 @@ import {
   createTeamWithCaptain,
   requestJoinTeam, loadJoinRequests,
   acceptJoinRequest, rejectJoinRequest, removeMemberFromTeam,
+  transferCaptain,
+  getTeamWindows, sendScrimRequest, loadIncomingScrimRequests, respondScrimRequest,
 } from './storage';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { formatDiscord } from './utils/discord';
@@ -68,6 +70,7 @@ export default function App() {
   const [teamName, setTeamName] = useState('');
   const [myTeamRole, setMyTeamRole] = useState('player');
   const [joinRequests, setJoinRequests] = useState([]);
+  const [scrimRequests, setScrimRequests] = useState([]);
 
   /* Derived: current user's member record in this team */
   const sessionPlayer = useMemo(
@@ -118,6 +121,12 @@ export default function App() {
     loadJoinRequests(teamCode).then(setJoinRequests).catch(() => {});
   }, [myTeamRole, teamCode]);
 
+  // Load incoming scrim requests (captain, coach, manager)
+  useEffect(() => {
+    if (!teamCode || (myTeamRole !== 'captain' && myTeamRole !== 'coach' && myTeamRole !== 'manager')) return;
+    loadIncomingScrimRequests(teamCode).then(setScrimRequests).catch(() => {});
+  }, [teamCode, myTeamRole]);
+
   /* ─── auth & team handlers ─── */
   const handleGlobalLogin = async (name, password) => {
     const user = await loginUser(name, password); // throws on error
@@ -165,6 +174,7 @@ export default function App() {
     setComps([]);
     setDrafts([]);
     setScrims([]);
+    setScrimRequests([]);
     setLoaded(false);
   };
 
@@ -176,6 +186,23 @@ export default function App() {
     setCurrentUserNameStorage('');
     setActiveTeamCode('');
     localStorage.removeItem('lol-local-mode');
+  };
+
+  /* ─── captain transfer handler ─── */
+  const handleTransferCaptain = async (newMemberUserId) => {
+    if (!window.confirm('¿Transferir la capitanía a este jugador? Perderás tus poderes de capitán.')) return;
+    try {
+      await transferCaptain(teamCode, newMemberUserId, currentUserId);
+      setPlayers(ps => ps.map(p => {
+        if (p.userId === currentUserId) return { ...p, teamRole: 'player' };
+        if (p.userId === newMemberUserId) return { ...p, teamRole: 'captain' };
+        return p;
+      }));
+      setMyTeamRole('player');
+      setJoinRequests([]);
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
   };
 
   /* ─── cell data (for schedule) ─── */
@@ -286,8 +313,16 @@ export default function App() {
   ];
 
   const isCaptain = myTeamRole === 'captain';
-  const isCoachOrManager = myTeamRole === 'coach' || myTeamRole === 'manager';
-  const canEdit = !isCoachOrManager;
+  const perms = {
+    editSchedule:  myTeamRole === 'player' || myTeamRole === 'captain' || myTeamRole === 'substitute',
+    editOwnPool:   myTeamRole === 'player' || myTeamRole === 'captain' || myTeamRole === 'substitute',
+    editComps:     myTeamRole !== 'substitute',
+    editDrafts:    true,
+    editScrims:    myTeamRole !== 'substitute',
+    captainPanel:  myTeamRole === 'captain',
+    viewAll:       true,
+  };
+  const canEdit = perms.editSchedule;
 
   return (
     <div className="app-container">
@@ -376,7 +411,7 @@ export default function App() {
           windows={windows}
           champions={champions}
           sessionPlayerId={sessionPlayerId}
-          canEdit={canEdit}
+          canEdit={perms.editSchedule}
         />
       )}
       {tab === 'comps' && (
@@ -388,6 +423,8 @@ export default function App() {
           players={players}
           champions={champions}
           sessionPlayerId={sessionPlayerId}
+          canEditComps={perms.editComps}
+          canEditDrafts={perms.editDrafts}
         />
       )}
       {tab === 'scrims' && (
@@ -396,6 +433,13 @@ export default function App() {
           setScrims={setScrims}
           comps={comps}
           sessionPlayerId={sessionPlayerId}
+          canEdit={perms.editScrims}
+          teamCode={teamCode}
+          teamName={teamName}
+          myWindows={windows}
+          scrimRequests={scrimRequests}
+          setScrimRequests={setScrimRequests}
+          canManageScrimRequests={isCaptain || myTeamRole === 'coach' || myTeamRole === 'manager'}
         />
       )}
       {tab === 'stats' && (
@@ -417,6 +461,7 @@ export default function App() {
           setPlayers={setPlayers}
           teamCode={teamCode}
           currentUserId={currentUserId}
+          onTransferCaptain={handleTransferCaptain}
         />
       )}
 
@@ -901,15 +946,17 @@ function ChampionSearch({ champions, onSelect, onClose, exclude = [] }) {
    COMPOSITIONS TAB
    ═══════════════════════════════════════════════════════════════════ */
 
-function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sessionPlayerId }) {
+function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sessionPlayerId, canEditComps, canEditDrafts }) {
   const [subTab, setSubTab] = useState('comps'); // comps | drafts
   const [editingCompId, setEditingCompId] = useState(null); // null | id
   const [editingDraftId, setEditingDraftId] = useState(null); // null | id
   const isSpectator = sessionPlayerId === 'spectator';
+  const canModifyComps = canEditComps && !isSpectator;
+  const canModifyDrafts = canEditDrafts && !isSpectator;
 
   /* --- Compositions Management --- */
   const addComp = (team) => {
-    if (isSpectator) return;
+    if (!canModifyComps) return;
     const newComp = {
       id: `comp_${uid()}`,
       name: `Comp Nueva ${team === 'azul' ? 'Azul' : 'Roja'}`,
@@ -925,25 +972,25 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
   };
 
   const updateComp = (id, updates) => {
-    if (isSpectator) return;
+    if (!canModifyComps) return;
     setComps((cs) => cs.map((c) => c.id === id ? { ...c, ...updates, updatedAt: Date.now() } : c));
   };
 
   const deleteComp = (id) => {
-    if (isSpectator) return;
+    if (!canModifyComps) return;
     setComps((cs) => cs.filter((c) => c.id !== id));
     if (editingCompId === id) setEditingCompId(null);
   };
 
   const duplicateComp = (comp) => {
-    if (isSpectator) return;
+    if (!canModifyComps) return;
     const dup = { ...comp, id: `comp_${uid()}`, name: `${comp.name} (copia)`, createdAt: Date.now(), updatedAt: Date.now(), slots: { ...comp.slots }, styles: [...comp.styles] };
     setComps((cs) => [dup, ...cs]);
   };
 
   /* --- Drafts Management --- */
   const addDraft = () => {
-    if (isSpectator) return;
+    if (!canModifyDrafts) return;
     const newDraft = {
       id: `draft_${uid()}`,
       name: 'Nuevo Draft de Scrim',
@@ -960,12 +1007,12 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
   };
 
   const updateDraft = (id, updates) => {
-    if (isSpectator) return;
+    if (!canModifyDrafts) return;
     setDrafts((ds) => ds.map((d) => d.id === id ? { ...d, ...updates, updatedAt: Date.now() } : d));
   };
 
   const deleteDraft = (id) => {
-    if (isSpectator) return;
+    if (!canModifyDrafts) return;
     setDrafts((ds) => ds.filter((d) => d.id !== id));
     if (editingDraftId === id) setEditingDraftId(null);
   };
@@ -1026,7 +1073,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
             ⚔️ Planificador de Draft (Picks & Bans)
           </button>
         </div>
-        {subTab === 'drafts' && !isSpectator && (
+        {subTab === 'drafts' && canModifyDrafts && (
           <button className="btn btn--gold" onClick={addDraft}>+ Nuevo Draft</button>
         )}
       </div>
@@ -1038,7 +1085,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
           <div className="card card--blue" style={{ borderTop: '4px solid var(--blue)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div className="card__header" style={{ borderBottom: '1px solid var(--blue-border)', paddingBottom: '0.5rem' }}>
               <span className="card__title font-semibold text-lg" style={{ color: 'var(--blue-text)', fontFamily: 'var(--font-display)' }}>🔵 Equipo Azul</span>
-              {!isSpectator && (
+              {canModifyComps && (
                 <button className="btn btn--blue btn--sm" onClick={() => addComp('azul')}>+ Nueva Comp Azul</button>
               )}
             </div>
@@ -1054,7 +1101,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
                     onEdit={() => setEditingCompId(comp.id)}
                     onDuplicate={() => duplicateComp(comp)}
                     onDelete={() => deleteComp(comp.id)}
-                    isSpectator={isSpectator}
+                    isSpectator={!canModifyComps}
                   />
                 ))}
               </div>
@@ -1065,7 +1112,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
           <div className="card card--red" style={{ borderTop: '4px solid var(--red)', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
             <div className="card__header" style={{ borderBottom: '1px solid var(--red-border)', paddingBottom: '0.5rem' }}>
               <span className="card__title font-semibold text-lg" style={{ color: 'var(--red-text)', fontFamily: 'var(--font-display)' }}>🔴 Equipo Rojo</span>
-              {!isSpectator && (
+              {canModifyComps && (
                 <button className="btn btn--red btn--sm" onClick={() => addComp('rojo')}>+ Nueva Comp Roja</button>
               )}
             </div>
@@ -1081,7 +1128,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
                     onEdit={() => setEditingCompId(comp.id)}
                     onDuplicate={() => duplicateComp(comp)}
                     onDelete={() => deleteComp(comp.id)}
-                    isSpectator={isSpectator}
+                    isSpectator={!canModifyComps}
                   />
                 ))}
               </div>
@@ -1106,7 +1153,7 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
                   champions={champions}
                   onEdit={() => setEditingDraftId(draft.id)}
                   onDelete={() => deleteDraft(draft.id)}
-                  isSpectator={isSpectator}
+                  isSpectator={!canModifyDrafts}
                 />
               ))}
             </div>
@@ -1776,12 +1823,15 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
    SCRIMS TAB
    ═══════════════════════════════════════════════════════════════════ */
 
-function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId }) {
+function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId, canEdit,
+                     teamCode, teamName, myWindows,
+                     scrimRequests, setScrimRequests, canManageScrimRequests }) {
   const [editing, setEditing] = useState(null);
   const isSpectator = sessionPlayerId === 'spectator';
+  const canModify = canEdit && !isSpectator;
 
   const addScrim = () => {
-    if (isSpectator) return;
+    if (!canModify) return;
     const newScrim = {
       id: `scrim_${uid()}`,
       date: new Date().toISOString().slice(0, 10),
@@ -1799,12 +1849,12 @@ function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId }) {
   };
 
   const updateScrim = (id, updates) => {
-    if (isSpectator) return;
+    if (!canModify) return;
     setScrims((ss) => ss.map((s) => s.id === id ? { ...s, ...updates } : s));
   };
 
   const deleteScrim = (id) => {
-    if (isSpectator) return;
+    if (!canModify) return;
     setScrims((ss) => ss.filter((s) => s.id !== id));
     if (editing === id) setEditing(null);
   };
@@ -1815,7 +1865,7 @@ function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId }) {
     <div>
       <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
         <h2 className="section-header text-gold mb-0">Historial de Scrims</h2>
-        {!isSpectator && (
+        {canModify && (
           <button className="btn btn--gold" onClick={addScrim}>+ Nuevo Scrim</button>
         )}
       </div>
@@ -1937,7 +1987,7 @@ function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId }) {
             const compA = comps.find((c) => c.id === scrim.compAzul);
             const compR = comps.find((c) => c.id === scrim.compRojo);
             return (
-              <div key={scrim.id} className="scrim-card" onClick={() => !isSpectator && setEditing(scrim.id)} style={{ cursor: isSpectator ? 'default' : 'pointer' }}>
+              <div key={scrim.id} className="scrim-card" onClick={() => canModify && setEditing(scrim.id)} style={{ cursor: canModify ? 'pointer' : 'default' }}>
                 <div className="scrim-card__header">
                   <div className="flex items-center gap-2">
                     <span className="scrim-card__date">{scrim.date} · {scrim.time}</span>
@@ -1965,6 +2015,32 @@ function ScrimsTab({ scrims, setScrims, comps, sessionPlayerId }) {
             );
           })}
         </div>
+      )}
+
+      {/* Scrim Matchmaker — only for captain/coach/manager */}
+      {canManageScrimRequests && (
+        <ScrimMatchmaker
+          teamCode={teamCode}
+          teamName={teamName}
+          myWindows={myWindows || []}
+          scrimRequests={scrimRequests}
+          setScrimRequests={setScrimRequests}
+          onCreateScrim={(data) => {
+            const newScrim = {
+              id: `s_${Date.now()}`,
+              date: '',
+              time: '',
+              compAzul: '',
+              compRojo: '',
+              winner: '',
+              rating: 0,
+              notes: `Scrim agendado para ${DAYS[data.day]} ${String((START_HOUR + data.slot) % 24).padStart(2, '0')}:00`,
+              tags: [],
+              createdAt: Date.now(),
+            };
+            setScrims(s => [...s, newScrim]);
+          }}
+        />
       )}
     </div>
   );
@@ -2539,10 +2615,176 @@ function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onC
 }
 
 /* ═══════════════════════════════════════════════════════════════════
+   SCRIM MATCHMAKER — Buscar y solicitar scrims con otros equipos
+   ═══════════════════════════════════════════════════════════════════ */
+
+function ScrimMatchmaker({ teamCode, teamName, myWindows, scrimRequests, setScrimRequests, onCreateScrim }) {
+  const [activeSection, setActiveSection] = useState('search');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [selectedTeam, setSelectedTeam] = useState(null);
+  const [theirWindows, setTheirWindows] = useState([]);
+  const [selectedWindow, setSelectedWindow] = useState(null);
+  const [message, setMessage] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const doSearch = async (q) => {
+    setSearchQuery(q);
+    if (!q.trim()) { setSearchResults([]); return; }
+    const results = await searchPublicTeams(q);
+    setSearchResults(results.filter(t => t.id !== teamCode));
+  };
+
+  const selectTeam = async (team) => {
+    setSelectedTeam(team);
+    setSelectedWindow(null);
+    const { windows } = await getTeamWindows(team.id);
+    setTheirWindows(windows);
+  };
+
+  const overlap = useMemo(() => {
+    if (!theirWindows.length || !myWindows.length) return [];
+    return myWindows.filter(mw =>
+      theirWindows.some(tw =>
+        tw.day === mw.day &&
+        tw.start <= mw.end &&
+        tw.end >= mw.start
+      )
+    );
+  }, [myWindows, theirWindows]);
+
+  const handleSend = async (e) => {
+    e.preventDefault();
+    if (!selectedWindow) return;
+    setLoading(true); setError('');
+    try {
+      await sendScrimRequest(teamCode, selectedTeam.id, selectedWindow.day, selectedWindow.start, selectedWindow.end - selectedWindow.start + 1, message);
+      setSelectedTeam(null); setSelectedWindow(null); setMessage('');
+      alert('Solicitud enviada correctamente.');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRespond = async (req, accepted) => {
+    try {
+      await respondScrimRequest(req.id, accepted);
+      setScrimRequests(rs => rs.filter(r => r.id !== req.id));
+      if (accepted) {
+        onCreateScrim({
+          opponent: req.fromTeamName,
+          day: req.day,
+          slot: req.slot,
+        });
+      }
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const fmtWindow = (w) => {
+    const dayNames = ['Lun','Mar','Mié','Jue','Vie','Sáb','Dom'];
+    const startH = (START_HOUR + w.start) % 24;
+    const endH = (START_HOUR + w.end + 1) % 24;
+    return `${dayNames[w.day]} ${String(startH).padStart(2,'0')}:00–${String(endH).padStart(2,'0')}:00`;
+  };
+
+  return (
+    <div className="card mt-6">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <span style={{ fontWeight: 600, color: 'var(--gold-bright)' }}>🤝 Scrims con otros equipos</span>
+        <div style={{ display: 'flex' }}>
+          {[['search','Buscar'],['incoming',`Recibidas (${scrimRequests.length})`]].map(([id,label],i) => (
+            <button key={id} onClick={() => setActiveSection(id)}
+              style={activeSection === id
+                ? { flex: 1, padding: '0.3rem 0.7rem', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '0.75rem', borderRadius: i === 0 ? '6px 0 0 6px' : '0 6px 6px 0' }
+                : { flex: 1, padding: '0.3rem 0.7rem', background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.75rem', borderRadius: i === 0 ? '6px 0 0 6px' : '0 6px 6px 0' }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {error && <p className="text-xs mb-3" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
+
+      {activeSection === 'search' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <input className="input w-full" placeholder="Buscar equipo por nombre…"
+            value={searchQuery} onChange={e => doSearch(e.target.value)} />
+          {searchResults.map(t => (
+            <div key={t.id} style={{ padding: '0.75rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                <span style={{ fontWeight: 600 }}>{t.name}</span>
+                <button className="btn btn--gold btn--sm"
+                  onClick={() => selectTeam(t)}>
+                  {selectedTeam?.id === t.id ? 'Seleccionado' : 'Ver disponibilidad'}
+                </button>
+              </div>
+              {selectedTeam?.id === t.id && (
+                <div style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
+                  {overlap.length === 0 ? (
+                    <p className="text-sm text-muted">No hay ventanas en común con este equipo.</p>
+                  ) : (
+                    <>
+                      <p className="text-xs text-muted mb-2">Ventanas donde ambos equipos tienen jugadores suficientes:</p>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
+                        {overlap.map((w, i) => (
+                          <label key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                            <input type="radio" name="scrim-window"
+                              checked={selectedWindow === w}
+                              onChange={() => setSelectedWindow(w)} />
+                            <span className="text-sm">{fmtWindow(w)}</span>
+                          </label>
+                        ))}
+                      </div>
+                      {selectedWindow && (
+                        <form onSubmit={handleSend} style={{ marginTop: '0.75rem', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                          <input className="input w-full" placeholder="Mensaje para el equipo (opcional)"
+                            value={message} onChange={e => setMessage(e.target.value)} />
+                          <button className="btn btn--gold btn--sm" type="submit" disabled={loading}>
+                            {loading ? 'Enviando…' : '📨 Enviar solicitud de scrim'}
+                          </button>
+                        </form>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {activeSection === 'incoming' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          {scrimRequests.length === 0 ? (
+            <p className="text-sm text-muted">No hay solicitudes pendientes.</p>
+          ) : scrimRequests.map(req => (
+            <div key={req.id} style={{ padding: '0.75rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
+              <div style={{ fontWeight: 600, marginBottom: '0.25rem' }}>{req.fromTeamName}</div>
+              <div className="text-xs text-muted mb-2">{fmtWindow(req)}</div>
+              {req.message && <p className="text-xs text-muted mb-2" style={{ fontStyle: 'italic' }}>"{req.message}"</p>}
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <button className="btn btn--gold btn--sm" onClick={() => handleRespond(req, true)}>✓ Aceptar</button>
+                <button className="btn btn--ghost btn--sm" onClick={() => handleRespond(req, false)}
+                  style={{ color: 'var(--red-text)' }}>✕ Rechazar</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
    CAPTAIN PANEL — Solicitudes de unión y gestión de roster
    ═══════════════════════════════════════════════════════════════════ */
 
-function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, teamCode, currentUserId }) {
+function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, teamCode, currentUserId, onTransferCaptain }) {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState({});
   const [acceptRole, setAcceptRole] = useState({});
@@ -2669,10 +2911,19 @@ function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, team
                 </span>
               </div>
               {p.userId !== currentUserId && p.teamRole !== 'captain' && (
-                <button onClick={() => handleRemoveMember(p)}
-                  style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.15rem 0.5rem', color: 'var(--red-text)', cursor: 'pointer', fontSize: '0.7rem' }}>
-                  Expulsar
-                </button>
+                <div style={{ display: 'flex', gap: '0.35rem' }}>
+                  {p.teamRole === 'player' && (
+                    <button onClick={() => onTransferCaptain(p.userId)}
+                      style={{ background: 'none', border: '1px solid var(--border-gold)', borderRadius: '4px',
+                               padding: '0.15rem 0.5rem', color: 'var(--gold-primary)', cursor: 'pointer', fontSize: '0.7rem' }}>
+                      👑 Capitán
+                    </button>
+                  )}
+                  <button onClick={() => handleRemoveMember(p)}
+                    style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '4px', padding: '0.15rem 0.5rem', color: 'var(--red-text)', cursor: 'pointer', fontSize: '0.7rem' }}>
+                    Expulsar
+                  </button>
+                </div>
               )}
             </div>
           ))}

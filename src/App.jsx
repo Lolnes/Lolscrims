@@ -3210,9 +3210,9 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   };
 
   // Convertir LP numérico a texto de rango en español
-  const getRankName = (lpVal) => {
+  const getRankName = (lpVal, regionOrSummoner) => {
     if (lpVal === undefined || lpVal <= 0) return 'Unranked';
-    const rank = lpToRank(lpVal);
+    const rank = lpToRank(lpVal, regionOrSummoner);
     // Traducir rangos comunes al español para consistencia
     const translation = {
       'IRON': 'Hierro', 'BRONZE': 'Bronce', 'SILVER': 'Plata', 'GOLD': 'Oro',
@@ -3268,7 +3268,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                 )}
               </div>
               <div className="summoner-profile-bar__rank">
-                Rango Actual: <span className="text-gold font-bold">{getRankName(profile?.current_lp_value)}</span>
+                Rango Actual: <span className="text-gold font-bold">{getRankName(profile?.current_lp_value, profile?.summoner_name)}</span>
               </div>
             </div>
           </div>
@@ -3451,10 +3451,10 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                               </span>
                             </td>
                             <td className="text-muted text-xs hidden-mobile">
-                              {getRankName(p.startLp)}
+                              {getRankName(p.startLp, p.summonerName)}
                             </td>
                             <td className="font-bold text-xs text-gold">
-                              {getRankName(p.currentLp)}
+                              {p.currentRankStr || getRankName(p.currentLp, p.summonerName)}
                             </td>
                             <td style={{ textAlign: 'right', fontWeight: 'bold' }} className={p.delta > 0 ? 'text-green' : p.delta < 0 ? 'text-red' : 'text-muted'}>
                               {p.delta > 0 ? `+${p.delta} LP` : p.delta < 0 ? `${p.delta} LP` : '0 LP'}
@@ -3603,7 +3603,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                 />
                 {editSummonerName.trim() && (
                   <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    Rango detectado automáticamente: <strong className="text-gold">{getRankName(getSummonerDeterministicLpValue(editSummonerName))}</strong>
+                    Rango detectado automáticamente: <strong className="text-gold">{getRankName(getSummonerDeterministicLpValue(editSummonerName), editSummonerName)}</strong>
                   </div>
                 )}
               </div>

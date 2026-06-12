@@ -872,29 +872,118 @@ export const TIER_BASES = {
   CHALLENGER: 3900,
 };
 
+export function getRiotRegionsFromTag(tag) {
+  const t = (tag || '').toUpperCase().trim();
+  if (t === 'KR' || t === 'KR1') return { region: 'kr', routing: 'asia' };
+  if (t === 'EUW' || t === 'EUW1') return { region: 'euw1', routing: 'europe' };
+  if (t === 'EUNE' || t === 'EUN1') return { region: 'eun1', routing: 'europe' };
+  if (t === 'NA' || t === 'NA1') return { region: 'na1', routing: 'americas' };
+  if (t === 'LAS' || t === 'LA2') return { region: 'la2', routing: 'americas' };
+  if (t === 'BR' || t === 'BR1') return { region: 'br1', routing: 'americas' };
+  return { region: 'la1', routing: 'americas' };
+}
+
+export function getRegionFromSummonerName(summonerName) {
+  const parts = (summonerName || '').split('#');
+  const tag = parts[1];
+  return getRiotRegionsFromTag(tag).region;
+}
+
+async function fetchRiotApi(url, apiKey) {
+  const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const res = await fetch(proxiedUrl);
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
+    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
+    throw new Error(`Error de conexión con la API de Riot (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  if (data && data.status && data.status.status_code >= 400) {
+    const code = data.status.status_code;
+    if (code === 403) throw new Error('Riot API Key inválida o expirada.');
+    if (code === 404) throw new Error('Invocador o datos no encontrados.');
+    throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
+  }
+  return data;
+}
+
+export async function fetchRealApexCutoffs(region, apiKey) {
+  if (!apiKey) return { challenger: 1000, grandmaster: 500 };
+  try {
+    const chalUrl = `https://${region}.api.riotgames.com/lol/league/v4/challengerleagues/by-queue/RANKED_SOLO_5x5?api_key=${apiKey}`;
+    const gmUrl = `https://${region}.api.riotgames.com/lol/league/v4/grandmasterleagues/by-queue/RANKED_SOLO_5x5?api_key=${apiKey}`;
+    
+    const [chalLeague, gmLeague] = await Promise.all([
+      fetchRiotApi(chalUrl, apiKey),
+      fetchRiotApi(gmUrl, apiKey)
+    ]);
+    
+    let chalMin = 1000;
+    let gmMin = 500;
+    
+    if (chalLeague && chalLeague.entries && chalLeague.entries.length > 0) {
+      chalMin = Math.min(...chalLeague.entries.map(e => e.leaguePoints));
+    }
+    if (gmLeague && gmLeague.entries && gmLeague.entries.length > 0) {
+      gmMin = Math.min(...gmLeague.entries.map(e => e.leaguePoints));
+    }
+    
+    const cutoffs = { challenger: chalMin, grandmaster: gmMin, timestamp: Date.now() };
+    localStorage.setItem(`lol-cutoffs-${region}`, JSON.stringify(cutoffs));
+    return cutoffs;
+  } catch (err) {
+    console.error('Error al obtener cortes reales de Riot, usando valores por defecto:', err);
+    return { challenger: 1000, grandmaster: 500 };
+  }
+}
+
 export function rankToLp(tier, division, lp) {
   const t = (tier || 'UNRANKED').toUpperCase();
   if (t === 'UNRANKED') return 0;
-  const base = TIER_BASES[t] ?? 0;
+  
+  // En Apex tiers (Master, Grandmaster, Challenger), los puntos son absolutos y continuos a partir del base de Master
   if (t === 'MASTER' || t === 'GRANDMASTER' || t === 'CHALLENGER') {
-    return base + (Number(lp) || 0);
+    return (TIER_BASES.MASTER || 2900) + (Number(lp) || 0);
   }
+  
+  const base = TIER_BASES[t] ?? 0;
   const divIndex = DIVISIONS.indexOf(division || 'IV');
   const divLp = (divIndex >= 0 ? divIndex : 0) * 100;
   return base + divLp + (Number(lp) || 0);
 }
 
-export function lpToRank(lpValue) {
+export function lpToRank(lpValue, regionOrSummoner = 'la1') {
   if (lpValue <= 0) return { tier: 'UNRANKED', division: '', lp: 0, str: 'Unranked' };
   
-  if (lpValue >= 3900) {
-    return { tier: 'CHALLENGER', division: '', lp: lpValue - 3900, str: `Challenger ${lpValue - 3900} LP` };
-  }
-  if (lpValue >= 3400) {
-    return { tier: 'GRANDMASTER', division: '', lp: lpValue - 3400, str: `Grandmaster ${lpValue - 3400} LP` };
-  }
+  // Apex tiers: Master (0 LP+), Grandmaster (LP real de GM+), Challenger (LP real de Challenger+)
   if (lpValue >= 2900) {
-    return { tier: 'MASTER', division: '', lp: lpValue - 2900, str: `Master ${lpValue - 2900} LP` };
+    const apexLp = lpValue - 2900;
+    
+    let region = 'la1';
+    if (regionOrSummoner && regionOrSummoner.includes('#')) {
+      region = getRegionFromSummonerName(regionOrSummoner);
+    } else if (regionOrSummoner) {
+      region = regionOrSummoner;
+    }
+    
+    let chalCutoff = 1000;
+    let gmCutoff = 500;
+    try {
+      const cached = localStorage.getItem(`lol-cutoffs-${region}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        chalCutoff = parsed.challenger ?? 1000;
+        gmCutoff = parsed.grandmaster ?? 500;
+      }
+    } catch {}
+
+    if (apexLp >= chalCutoff) {
+      return { tier: 'CHALLENGER', division: '', lp: apexLp, str: `Challenger ${apexLp} LP` };
+    }
+    if (apexLp >= gmCutoff) {
+      return { tier: 'GRANDMASTER', division: '', lp: apexLp, str: `Grandmaster ${apexLp} LP` };
+    }
+    return { tier: 'MASTER', division: '', lp: apexLp, str: `Master ${apexLp} LP` };
   }
   
   const sortedTiers = ['DIAMOND', 'EMERALD', 'PLATINUM', 'GOLD', 'SILVER', 'BRONZE', 'IRON'];
@@ -948,7 +1037,7 @@ export async function updateUserProfile(userId, summonerName, privacy) {
   if (!isSupabaseConfigured) return;
   const trimmed = summonerName.trim();
   const lpValue = getSummonerDeterministicLpValue(trimmed);
-  const newRank = lpToRank(lpValue);
+  const newRank = lpToRank(lpValue, trimmed);
 
   const { error } = await supabase
     .from('users')
@@ -1076,17 +1165,19 @@ export async function loadLadderDetails(ladderId) {
 
   if (!ladder) return null;
 
-  return {
-    id: ladder.id,
-    teamId: ladder.team_id,
-    name: ladder.name,
-    type: ladder.type,
-    period: ladder.period,
-    startDate: ladder.start_date,
-    endDate: ladder.end_date,
-    status: ladder.status,
-    teams: (teams || []).map(t => ({ id: t.team_id, name: t.teams?.name || '' })),
-    participants: (participants || []).map(p => ({
+  const mappedParticipants = (participants || []).map(p => {
+    const rank = lpToRank(p.current_lp, p.users?.summoner_name);
+    const translation = {
+      'UNRANKED': 'Unranked', 'IRON': 'Hierro', 'BRONZE': 'Bronce', 'SILVER': 'Plata', 'GOLD': 'Oro',
+      'PLATINUM': 'Platino', 'EMERALD': 'Esmeralda', 'DIAMOND': 'Diamante',
+      'MASTER': 'Maestro', 'GRANDMASTER': 'Gran Maestro', 'CHALLENGER': 'Retador'
+    };
+    const tierSpanish = translation[rank.tier] || rank.tier;
+    const rankStr = rank.tier === 'MASTER' || rank.tier === 'GRANDMASTER' || rank.tier === 'CHALLENGER'
+      ? `${tierSpanish} (${rank.lp} LP)`
+      : `${tierSpanish} ${rank.division} (${rank.lp} LP)`;
+
+    return {
       userId: p.user_id,
       userName: p.users?.name || '?',
       summonerName: p.users?.summoner_name || '',
@@ -1097,10 +1188,24 @@ export async function loadLadderDetails(ladderId) {
       currentLp: p.current_lp,
       delta: p.current_lp - p.start_lp,
       lastUpdated: p.last_updated,
-      currentTier: p.users?.current_tier || 'UNRANKED',
-      currentDivision: p.users?.current_division || 'IV',
-      currentLpNum: p.users?.current_lp || 0
-    })).sort((a, b) => b.delta - a.delta)
+      currentTier: rank.tier,
+      currentDivision: rank.division,
+      currentLpNum: rank.lp,
+      currentRankStr: rankStr
+    };
+  });
+
+  return {
+    id: ladder.id,
+    teamId: ladder.team_id,
+    name: ladder.name,
+    type: ladder.type,
+    period: ladder.period,
+    startDate: ladder.start_date,
+    endDate: ladder.end_date,
+    status: ladder.status,
+    teams: (teams || []).map(t => ({ id: t.team_id, name: t.teams?.name || '' })),
+    participants: mappedParticipants.sort((a, b) => b.delta - a.delta)
   };
 }
 
@@ -1234,34 +1339,7 @@ export async function loadUserGames(userId) {
   }));
 }
 
-function getRiotRegionsFromTag(tag) {
-  const t = (tag || '').toUpperCase().trim();
-  if (t === 'KR' || t === 'KR1') return { region: 'kr', routing: 'asia' };
-  if (t === 'EUW' || t === 'EUW1') return { region: 'euw1', routing: 'europe' };
-  if (t === 'EUNE' || t === 'EUN1') return { region: 'eun1', routing: 'europe' };
-  if (t === 'NA' || t === 'NA1') return { region: 'na1', routing: 'americas' };
-  if (t === 'LAS' || t === 'LA2') return { region: 'la2', routing: 'americas' };
-  if (t === 'BR' || t === 'BR1') return { region: 'br1', routing: 'americas' };
-  return { region: 'la1', routing: 'americas' };
-}
 
-async function fetchRiotApi(url, apiKey) {
-  const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-  const res = await fetch(proxiedUrl);
-  if (!res.ok) {
-    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
-    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
-    throw new Error(`Error de conexión con la API de Riot (HTTP ${res.status})`);
-  }
-  const data = await res.json();
-  if (data && data.status && data.status.status_code >= 400) {
-    const code = data.status.status_code;
-    if (code === 403) throw new Error('Riot API Key inválida o expirada.');
-    if (code === 404) throw new Error('Invocador o datos no encontrados.');
-    throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
-  }
-  return data;
-}
 
 export async function syncUserGames(userId, teamId, summonerName, isManual = true) {
   if (!isSupabaseConfigured || !userId) {
@@ -1314,6 +1392,13 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
       division = soloQEntry.division; 
       lp = soloQEntry.leaguePoints;
       lpValue = rankToLp(tier, division, lp);
+    }
+
+    // Obtener y actualizar los cortes reales de Apex (Challenger/GM) para esta región
+    try {
+      await fetchRealApexCutoffs(region, apiKey);
+    } catch (e) {
+      console.error('Error al actualizar cortes reales en sync:', e);
     }
 
     // 4. Obtener últimos 5 Match IDs
@@ -1588,7 +1673,7 @@ export async function syncUserGamesSimulated(userId, teamId, summonerName, isMan
     if (insertErr) throw new Error('Error al guardar partidas: ' + insertErr.message);
 
     // 4. Actualizar rango y LP acumulados en la cuenta del usuario
-    const newRank = lpToRank(lpAccumulator);
+    const newRank = lpToRank(lpAccumulator, summonerName);
     const { error: profileErr } = await supabase
       .from('users')
       .update({

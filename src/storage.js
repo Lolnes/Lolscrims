@@ -1234,11 +1234,224 @@ export async function loadUserGames(userId) {
   }));
 }
 
+function getRiotRegionsFromTag(tag) {
+  const t = (tag || '').toUpperCase().trim();
+  if (t === 'KR' || t === 'KR1') return { region: 'kr', routing: 'asia' };
+  if (t === 'EUW' || t === 'EUW1') return { region: 'euw1', routing: 'europe' };
+  if (t === 'EUNE' || t === 'EUN1') return { region: 'eun1', routing: 'europe' };
+  if (t === 'NA' || t === 'NA1') return { region: 'na1', routing: 'americas' };
+  if (t === 'LAS' || t === 'LA2') return { region: 'la2', routing: 'americas' };
+  if (t === 'BR' || t === 'BR1') return { region: 'br1', routing: 'americas' };
+  return { region: 'la1', routing: 'americas' };
+}
+
+async function fetchRiotApi(url, apiKey) {
+  const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+  const res = await fetch(proxiedUrl);
+  if (!res.ok) {
+    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
+    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
+    throw new Error(`Error de conexión con la API de Riot (HTTP ${res.status})`);
+  }
+  const data = await res.json();
+  if (data && data.status && data.status.status_code >= 400) {
+    const code = data.status.status_code;
+    if (code === 403) throw new Error('Riot API Key inválida o expirada.');
+    if (code === 404) throw new Error('Invocador o datos no encontrados.');
+    throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
+  }
+  return data;
+}
+
 export async function syncUserGames(userId, teamId, summonerName, isManual = true) {
   if (!isSupabaseConfigured || !userId) {
     return { success: false, gamesAdded: 0, status: 'Supabase no configurado' };
   }
 
+  // Intentar obtener la API Key del localStorage o del .env
+  const apiKey = localStorage.getItem('lol-riot-api-key') || import.meta.env.VITE_RIOT_API_KEY || '';
+
+  // Si no hay API Key, usamos la simulación basada en tiempo transcurrido
+  if (!apiKey) {
+    return await syncUserGamesSimulated(userId, teamId, summonerName, isManual);
+  }
+
+  // --- LOGICA DE RIOT API REAL ---
+  const parts = summonerName.split('#');
+  const gameName = parts[0];
+  const tagLine = parts[1];
+
+  if (!gameName || !tagLine) {
+    throw new Error('Formato de Riot ID inválido. Debe tener la estructura Nombre#Tag (ej: Faker#KR1).');
+  }
+
+  const { region, routing } = getRiotRegionsFromTag(tagLine);
+
+  try {
+    // 1. Obtener PUUID del Riot Account API
+    const accountUrl = `https://${routing}.api.riotgames.com/riot/account/v1/accounts/by-riot-id/${encodeURIComponent(gameName)}/${encodeURIComponent(tagLine)}?api_key=${apiKey}`;
+    const account = await fetchRiotApi(accountUrl, apiKey);
+    const puuid = account.puuid;
+
+    // 2. Obtener datos básicos de Summoner (para conseguir el summoner ID necesario para ligas)
+    const summonerUrl = `https://${region}.api.riotgames.com/lol/summoner/v4/summoners/by-puuid/${puuid}?api_key=${apiKey}`;
+    const summoner = await fetchRiotApi(summonerUrl, apiKey);
+    const summonerId = summoner.id;
+
+    // 3. Obtener liga (Elo)
+    const leagueUrl = `https://${region}.api.riotgames.com/lol/league/v4/entries/by-summoner/${summonerId}?api_key=${apiKey}`;
+    const leagueEntries = await fetchRiotApi(leagueUrl, apiKey);
+    
+    // Buscar la liga de SoloQ
+    const soloQEntry = leagueEntries.find(e => e.queueType === 'RANKED_SOLO_5x5');
+    let tier = 'UNRANKED';
+    let division = 'IV';
+    let lp = 0;
+    let lpValue = 0;
+
+    if (soloQEntry) {
+      tier = soloQEntry.tier; 
+      division = soloQEntry.division; 
+      lp = soloQEntry.leaguePoints;
+      lpValue = rankToLp(tier, division, lp);
+    }
+
+    // 4. Obtener últimos 5 Match IDs
+    const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5&api_key=${apiKey}`;
+    const matchIds = await fetchRiotApi(matchesUrl, apiKey);
+
+    // Obtener los IDs de las partidas que ya tenemos en la base de datos para no duplicar
+    const { data: existingGames } = await supabase
+      .from('summoner_games')
+      .select('id')
+      .eq('user_id', userId);
+    const existingIds = (existingGames || []).map(g => g.id);
+
+    // Filtrar partidas nuevas
+    const newMatchIds = matchIds.filter(id => !existingIds.includes(id));
+
+    // Obtener todos los usuarios con summoner name para buscar enfrentamientos directos en la DB
+    const { data: allUsers } = await supabase
+      .from('users')
+      .select('id, name, summoner_name')
+      .neq('summoner_name', '')
+      .not('summoner_name', 'is', null);
+
+    const newGames = [];
+
+    // 5. Cargar detalles de cada partida nueva
+    for (const matchId of newMatchIds) {
+      const matchDetailUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/${matchId}?api_key=${apiKey}`;
+      const match = await fetchRiotApi(matchDetailUrl, apiKey);
+      
+      if (!match || !match.info || !match.info.participants) continue;
+
+      // Buscar al propio jugador en la partida
+      const meParticipant = match.info.participants.find(p => p.puuid === puuid);
+      if (!meParticipant) continue;
+
+      const myTeamId = meParticipant.teamId;
+      const myResult = meParticipant.win ? 'win' : 'loss';
+
+      // KDA
+      const kills = meParticipant.kills;
+      const deaths = meParticipant.deaths;
+      const assists = meParticipant.assists;
+      
+      const lpChange = meParticipant.win ? 20 : -15;
+
+      // Buscar cruces con otros jugadores de nuestra base de datos
+      const matched = [];
+      for (const p of match.info.participants) {
+        if (p.puuid === puuid) continue;
+        
+        // Riot API devuelve gameName y tagLine por separado en v5
+        const pGameName = p.riotIdGameName || p.summonerName;
+        const pTagLine = p.riotIdTagline || '';
+        const pFullName = pTagLine ? `${pGameName}#${pTagLine}` : pGameName;
+
+        const dbUser = allUsers.find(u => {
+          const dbName = (u.summoner_name || '').trim().toLowerCase();
+          return dbName === pFullName.trim().toLowerCase() || dbName.split('#')[0] === pGameName.trim().toLowerCase();
+        });
+
+        if (dbUser) {
+          const sameTeam = p.teamId === myTeamId;
+          matched.push({
+            userId: dbUser.id,
+            summonerName: dbUser.summoner_name,
+            champion: p.championName,
+            sameTeam,
+            result: p.win ? 'win' : 'loss'
+          });
+        }
+      }
+
+      newGames.push({
+        id: matchId,
+        user_id: userId,
+        champion: meParticipant.championName,
+        role: meParticipant.teamPosition ? meParticipant.teamPosition.toLowerCase() : 'mid',
+        result: myResult,
+        kda_kills: kills,
+        kda_deaths: deaths,
+        kda_assists: assists,
+        lp_change: lpChange,
+        played_at: new Date(match.info.gameStartTimestamp || Date.now()),
+        players_matched: matched
+      });
+    }
+
+    // Insertar nuevas partidas en la base de datos
+    if (newGames.length > 0) {
+      const { error: insertErr } = await supabase
+        .from('summoner_games')
+        .insert(newGames);
+      if (insertErr) throw new Error('Error al guardar partidas reales: ' + insertErr.message);
+    }
+
+    // Actualizar el perfil del invocador con su Elo real de Riot
+    const { error: profileErr } = await supabase
+      .from('users')
+      .update({
+        current_tier: tier,
+        current_division: division,
+        current_lp: lp,
+        current_lp_value: lpValue
+      })
+      .eq('id', userId);
+    if (profileErr) throw new Error('Error al actualizar el Elo del invocador: ' + profileErr.message);
+
+    // Sincronizar en los ladders activos de este usuario
+    const { data: activeLadders } = await supabase
+      .from('ladders')
+      .select('id')
+      .eq('status', 'active');
+    
+    if (activeLadders && activeLadders.length > 0) {
+      const activeIds = activeLadders.map(l => l.id);
+      await supabase
+        .from('ladder_participants')
+        .update({ current_lp: lpValue, last_updated: new Date() })
+        .eq('user_id', userId)
+        .in('ladder_id', activeIds);
+    }
+
+    return {
+      success: true,
+      gamesAdded: newGames.length,
+      status: newGames.length > 0 
+        ? `¡Sincronización real completada! Se añadieron ${newGames.length} partida(s) nueva(s). Rango real: ${tier} ${division} (${lp} LP).`
+        : `Tu cuenta ya está sincronizada con Riot API. Rango real: ${tier} ${division} (${lp} LP).`
+    };
+
+  } catch (err) {
+    console.error('Error al sincronizar con Riot API real', err);
+    throw new Error('Error de Riot API: ' + err.message);
+  }
+}
+
+export async function syncUserGamesSimulated(userId, teamId, summonerName, isManual = true) {
   // 1. Obtener usuario
   const { data: user } = await supabase
     .from('users')
@@ -1333,7 +1546,7 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     // CASO A: No hay partidas registradas (Invocador nuevo)
     // Generar un historial inicial de 5 partidas jugadas en las últimas 24 horas
     for (let i = 0; i < 5; i++) {
-      const gameTime = new Date(now.getTime() - (5 - i) * 3.5 * 60 * 60 * 1000); // Espaciadas cada 3.5 horas
+      const gameTime = new Date(now.getTime() - (5 - i) * 3.5 * 60 * 60 * 1000); 
       gamesToSimulate.push(generateSimulatedGame(gameTime, i));
     }
   } else {
@@ -1353,7 +1566,6 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
       }
     } else if (isManual) {
       // Si el usuario da clic manual a "Refresh" y no ha pasado suficiente tiempo para una partida natural:
-      // Permitir forzar 1 partida si han pasado al menos 5 minutos desde la última para dar feedback visual
       if (minsDiff >= 5) {
         gamesToSimulate.push(generateSimulatedGame(now, 0));
       } else {
@@ -1427,7 +1639,6 @@ export async function backgroundSyncParticipant(ladderId, userId, teamId, summon
     .eq('ladder_id', ladderId)
     .eq('user_id', userId);
 
-  // Llamar a syncUserGames con isManual = false para simular partidas basadas en tiempo transcurrido
   await syncUserGames(userId, teamId, summonerName, false);
 }
 

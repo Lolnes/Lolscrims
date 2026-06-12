@@ -2978,6 +2978,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const [editTier, setEditTier] = useState('UNRANKED');
   const [editDivision, setEditDivision] = useState('IV');
   const [editLp, setEditLp] = useState(0);
+  const [riotApiKey, setRiotApiKey] = useState(() => localStorage.getItem('lol-riot-api-key') || '');
 
   const [newLadderName, setNewLadderName] = useState('');
   const [newLadderType, setNewLadderType] = useState('soloq');
@@ -3094,6 +3095,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
     try {
+      localStorage.setItem('lol-riot-api-key', riotApiKey);
       await updateUserProfile(currentUserId, editSummonerName, editPrivacy);
       await fetchMyProfile();
       if (selectedLadderId) {
@@ -3616,6 +3618,20 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                   <option value="public">Público (Todos pueden ver tus partidas)</option>
                   <option value="private">Privado (Solo tú ves tus partidas, pero puntúas en el ladder)</option>
                 </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Riot API Key (Opcional - Datos reales)</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={riotApiKey} 
+                  onChange={e => setRiotApiKey(e.target.value)}
+                  placeholder="RGAPI-XXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX"
+                />
+                <span className="text-xs text-muted" style={{ display: 'block', marginTop: '0.25rem' }}>
+                  Si ingresas tu API Key de Riot (consíguela en developer.riotgames.com), se obtendrá tu Elo real e historial. Si la dejas vacía, se simulará basado en tiempo.
+                </span>
               </div>
 
               <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }} className="text-xs text-muted">

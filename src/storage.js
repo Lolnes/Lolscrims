@@ -925,23 +925,51 @@ export async function getUserProfile(userId) {
   return data;
 }
 
-export async function updateUserProfile(userId, summonerName, privacy, tier, division, lp) {
+export function getSummonerDeterministicLpValue(summonerName) {
+  const name = (summonerName || '').trim().toLowerCase();
+  if (!name) return 0;
+  
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) {
+    hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  }
+  hash = Math.abs(hash);
+  
+  // Easter eggs
+  if (name.includes('faker')) return 3900 + 1520;
+  if (name.includes('showmaker') || name.includes('chovy')) return 3900 + 1240;
+  if (name.includes('caps')) return 3900 + 950;
+  
+  // Entre 100 LP (Hierro IV) y 4200 LP (Challenger 300 LP)
+  return 100 + (hash % 4100);
+}
+
+export async function updateUserProfile(userId, summonerName, privacy) {
   if (!isSupabaseConfigured) return;
-  const lpValue = rankToLp(tier, division, lp);
+  const trimmed = summonerName.trim();
+  const lpValue = getSummonerDeterministicLpValue(trimmed);
+  const newRank = lpToRank(lpValue);
+
   const { error } = await supabase
     .from('users')
     .update({
-      summoner_name: summonerName.trim(),
+      summoner_name: trimmed,
       games_privacy: privacy,
-      current_tier: tier,
-      current_division: division,
-      current_lp: Number(lp) || 0,
+      current_tier: newRank.tier,
+      current_division: newRank.division,
+      current_lp: newRank.lp,
       current_lp_value: lpValue
     })
     .eq('id', userId);
   if (error) throw new Error('Error al actualizar perfil: ' + error.message);
   
-  // Actualizar también en los ladders activos en que participa
+  // Borrar partidas antiguas de este usuario ya que cambió su Summoner Name
+  await supabase
+    .from('summoner_games')
+    .delete()
+    .eq('user_id', userId);
+
+  // Actualizar también en los ladders activos en que participa (tanto start_lp como current_lp para evitar saltos extraños)
   const { data: activeLadders } = await supabase
     .from('ladders')
     .select('id')
@@ -950,7 +978,7 @@ export async function updateUserProfile(userId, summonerName, privacy, tier, div
     const activeIds = activeLadders.map(l => l.id);
     await supabase
       .from('ladder_participants')
-      .update({ current_lp: lpValue, last_updated: new Date() })
+      .update({ start_lp: lpValue, current_lp: lpValue, last_updated: new Date() })
       .eq('user_id', userId)
       .in('ladder_id', activeIds);
   }
@@ -1206,15 +1234,27 @@ export async function loadUserGames(userId) {
   }));
 }
 
-export async function syncUserGames(userId, teamId, summonerName) {
-  if (!isSupabaseConfigured || !userId) return;
+export async function syncUserGames(userId, teamId, summonerName, isManual = true) {
+  if (!isSupabaseConfigured || !userId) {
+    return { success: false, gamesAdded: 0, status: 'Supabase no configurado' };
+  }
 
+  // 1. Obtener usuario
   const { data: user } = await supabase
     .from('users')
     .select('*')
     .eq('id', userId)
     .maybeSingle();
   if (!user) throw new Error('Usuario no encontrado');
+
+  // 2. Obtener la última partida de este invocador para saber la marca temporal
+  const { data: lastGame } = await supabase
+    .from('summoner_games')
+    .select('played_at')
+    .eq('user_id', userId)
+    .order('played_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   // Buscar otros usuarios con summoner name para simular enfrentamientos directos
   const { data: allUsers } = await supabase
@@ -1224,35 +1264,37 @@ export async function syncUserGames(userId, teamId, summonerName) {
     .neq('summoner_name', '')
     .not('summoner_name', 'is', null);
 
-  const numGames = Math.floor(Math.random() * 3) + 3; // Simular entre 3 y 5 partidas
-  const newGames = [];
-  let lpAccumulator = user.current_lp_value || 1200; // Por defecto Plata IV (1200 LP) si era unranked
-
   const CHAMPIONS_LIST = ['Aatrox', 'Ahri', 'Akali', 'Alistar', 'Amumu', 'Ashe', 'Bard', 'Camille', 'Darius', 'Ezreal', 'Galio', 'Garen', 'Janna', 'Jax', 'KaiSa', 'Karma', 'LeeSin', 'Leona', 'Lulu', 'Lux', 'Malphite', 'MissFortune', 'Nautilus', 'Nidalee', 'Nocturne', 'Orianna', 'Ornn', 'Ryze', 'Sejuani', 'Sivir', 'Syndra', 'Thresh', 'Vayne', 'Yasuo', 'Yone', 'Zoe'];
   const ROLES_LIST = ['top', 'jg', 'mid', 'adc', 'sup'];
 
-  for (let i = 0; i < numGames; i++) {
-    const result = Math.random() > 0.45 ? 'win' : 'loss';
-    const lpChange = result === 'win' ? (Math.floor(Math.random() * 11) + 15) : -(Math.floor(Math.random() * 9) + 12);
-    lpAccumulator += lpChange;
-    if (lpAccumulator < 0) lpAccumulator = 0;
+  let lpAccumulator = user.current_lp_value || 1200;
+  let gamesToSimulate = [];
+  const now = new Date();
 
+  // Función interna para crear una partida simulada individual
+  const generateSimulatedGame = (playedAt, index) => {
+    const result = Math.random() > 0.5 ? 'win' : 'loss';
+    const lpChange = result === 'win' 
+      ? (Math.floor(Math.random() * 8) + 15) 
+      : -(Math.floor(Math.random() * 7) + 13);
+    
+    lpAccumulator = Math.max(0, lpAccumulator + lpChange);
+    
     const champ = CHAMPIONS_LIST[Math.floor(Math.random() * CHAMPIONS_LIST.length)];
     const role = ROLES_LIST[Math.floor(Math.random() * ROLES_LIST.length)];
     
-    // KDA
     let kills = 0, deaths = 0, assists = 0;
     if (result === 'win') {
-      kills = Math.floor(Math.random() * 8) + (role === 'sup' ? 0 : 3);
-      deaths = Math.floor(Math.random() * 5);
-      assists = Math.floor(Math.random() * 12) + 5;
+      kills = Math.floor(Math.random() * 7) + 2;
+      deaths = Math.floor(Math.random() * 4);
+      assists = Math.floor(Math.random() * 10) + 4;
     } else {
-      kills = Math.floor(Math.random() * 5) + (role === 'sup' ? 0 : 1);
-      deaths = Math.floor(Math.random() * 7) + 3;
-      assists = Math.floor(Math.random() * 8);
+      kills = Math.floor(Math.random() * 4) + 1;
+      deaths = Math.floor(Math.random() * 6) + 2;
+      assists = Math.floor(Math.random() * 7);
     }
 
-    // Cruces Head-to-Head (40% de probabilidad si hay otros invocadores registrados)
+    // Cruces Head-to-Head
     const matched = [];
     if (allUsers && allUsers.length > 0 && Math.random() < 0.4) {
       const numMatched = Math.min(allUsers.length, Math.random() < 0.8 ? 1 : 2);
@@ -1272,8 +1314,8 @@ export async function syncUserGames(userId, teamId, summonerName) {
       }
     }
 
-    newGames.push({
-      id: `g_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+    return {
+      id: `g_${Date.now()}_${index}_${Math.random().toString(36).slice(2, 6)}`,
       user_id: userId,
       champion: champ,
       role,
@@ -1282,42 +1324,111 @@ export async function syncUserGames(userId, teamId, summonerName) {
       kda_deaths: deaths,
       kda_assists: assists,
       lp_change: lpChange,
-      played_at: new Date(Date.now() - (i * 2.5 * 60 * 60 * 1000) - (Math.random() * 30 * 60 * 1000)),
+      played_at: playedAt,
       players_matched: matched
-    });
+    };
+  };
+
+  if (!lastGame) {
+    // CASO A: No hay partidas registradas (Invocador nuevo)
+    // Generar un historial inicial de 5 partidas jugadas en las últimas 24 horas
+    for (let i = 0; i < 5; i++) {
+      const gameTime = new Date(now.getTime() - (5 - i) * 3.5 * 60 * 60 * 1000); // Espaciadas cada 3.5 horas
+      gamesToSimulate.push(generateSimulatedGame(gameTime, i));
+    }
+  } else {
+    // CASO B: Ya tiene partidas
+    const lastGameTime = new Date(lastGame.played_at);
+    const msDiff = now.getTime() - lastGameTime.getTime();
+    const hoursDiff = msDiff / (60 * 60 * 1000);
+    const minsDiff = msDiff / (60 * 1000);
+
+    // Cada 3 horas se juega una partida de forma natural
+    const naturalGamesCount = Math.floor(hoursDiff / 3);
+    
+    if (naturalGamesCount > 0) {
+      for (let i = 0; i < naturalGamesCount; i++) {
+        const gameTime = new Date(lastGameTime.getTime() + (i + 1) * 3 * 60 * 60 * 1000);
+        gamesToSimulate.push(generateSimulatedGame(gameTime, i));
+      }
+    } else if (isManual) {
+      // Si el usuario da clic manual a "Refresh" y no ha pasado suficiente tiempo para una partida natural:
+      // Permitir forzar 1 partida si han pasado al menos 5 minutos desde la última para dar feedback visual
+      if (minsDiff >= 5) {
+        gamesToSimulate.push(generateSimulatedGame(now, 0));
+      } else {
+        // Hace menos de 5 minutos, devolver que está al día
+        const minWaitLeft = Math.ceil(5 - minsDiff);
+        return { 
+          success: true, 
+          gamesAdded: 0, 
+          status: `Tu cuenta ya está actualizada. Espera ${minWaitLeft} min para volver a escanear.` 
+        };
+      }
+    }
   }
 
-  // Insertar en la base de datos
-  const { error: gamesErr } = await supabase.from('summoner_games').insert(newGames);
-  if (gamesErr) throw new Error('Error al guardar partidas: ' + gamesErr.message);
+  // 3. Si hay partidas a insertar
+  if (gamesToSimulate.length > 0) {
+    const { error: insertErr } = await supabase
+      .from('summoner_games')
+      .insert(gamesToSimulate);
+    if (insertErr) throw new Error('Error al guardar partidas: ' + insertErr.message);
 
-  // Actualizar rango y LP acumulados en la cuenta
-  const newRank = lpToRank(lpAccumulator);
-  const { error: profileErr } = await supabase
-    .from('users')
-    .update({
-      current_tier: newRank.tier,
-      current_division: newRank.division,
-      current_lp: newRank.lp,
-      current_lp_value: lpAccumulator
-    })
-    .eq('id', userId);
-  if (profileErr) throw new Error('Error al actualizar rango de invocador: ' + profileErr.message);
+    // 4. Actualizar rango y LP acumulados en la cuenta del usuario
+    const newRank = lpToRank(lpAccumulator);
+    const { error: profileErr } = await supabase
+      .from('users')
+      .update({
+        current_tier: newRank.tier,
+        current_division: newRank.division,
+        current_lp: newRank.lp,
+        current_lp_value: lpAccumulator
+      })
+      .eq('id', userId);
+    if (profileErr) throw new Error('Error al actualizar perfil del invocador: ' + profileErr.message);
 
-  // Sincronizar en los ladders activos de este usuario
-  const { data: activeLadders } = await supabase
-    .from('ladders')
-    .select('id')
-    .eq('status', 'active');
-  
-  if (activeLadders && activeLadders.length > 0) {
-    const activeIds = activeLadders.map(l => l.id);
-    await supabase
-      .from('ladder_participants')
-      .update({ current_lp: lpAccumulator, last_updated: new Date() })
-      .eq('user_id', userId)
-      .in('ladder_id', activeIds);
+    // 5. Sincronizar en los ladders activos de este usuario
+    const { data: activeLadders } = await supabase
+      .from('ladders')
+      .select('id')
+      .eq('status', 'active');
+    
+    if (activeLadders && activeLadders.length > 0) {
+      const activeIds = activeLadders.map(l => l.id);
+      await supabase
+        .from('ladder_participants')
+        .update({ current_lp: lpAccumulator, last_updated: new Date() })
+        .eq('user_id', userId)
+        .in('ladder_id', activeIds);
+    }
+
+    return { 
+      success: true, 
+      gamesAdded: gamesToSimulate.length, 
+      status: `¡Historial actualizado! Se sincronizaron ${gamesToSimulate.length} partida(s) nueva(s).` 
+    };
   }
+
+  return { 
+    success: true, 
+    gamesAdded: 0, 
+    status: 'Tu clasificación y partidas están al día.' 
+  };
+}
+
+export async function backgroundSyncParticipant(ladderId, userId, teamId, summonerName, currentLpVal) {
+  if (!isSupabaseConfigured || !userId) return;
+
+  // Actualizar marca temporal inmediatamente para evitar ejecuciones concurrentes
+  await supabase
+    .from('ladder_participants')
+    .update({ last_updated: new Date() })
+    .eq('ladder_id', ladderId)
+    .eq('user_id', userId);
+
+  // Llamar a syncUserGames con isManual = false para simular partidas basadas en tiempo transcurrido
+  await syncUserGames(userId, teamId, summonerName, false);
 }
 
 

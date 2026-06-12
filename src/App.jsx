@@ -22,7 +22,8 @@ import {
   getTeamWindows, sendScrimRequest, loadIncomingScrimRequests, respondScrimRequest,
   getUserProfile, updateUserProfile, createLadder, loadTeamLadders, loadLadderDetails,
   ensureUserInLadder, sendLadderInvite, loadIncomingLadderInvites, respondLadderInvite,
-  loadUserGames, syncUserGames, TIERS, DIVISIONS, lpToRank,
+  loadUserGames, syncUserGames, TIERS, DIVISIONS, lpToRank, backgroundSyncParticipant,
+  getSummonerDeterministicLpValue,
 } from './storage';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { formatDiscord } from './utils/discord';
@@ -3047,6 +3048,25 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
         setActiveGameViewerName(profile?.summoner_name || currentUserName);
         setActiveGameViewerPrivacy(profile?.games_privacy || 'public');
       }
+
+      // Verificación de sincronización automática de 12 horas para todos los participantes
+      if (details && details.participants && details.participants.length > 0) {
+        const TWELVE_HOURS = 12 * 60 * 60 * 1000;
+        const expired = details.participants.filter(p => {
+          if (!p.summonerName) return false;
+          const lastUp = p.lastUpdated ? new Date(p.lastUpdated).getTime() : 0;
+          return Date.now() - lastUp > TWELVE_HOURS;
+        });
+
+        if (expired.length > 0) {
+          Promise.all(
+            expired.map(p => backgroundSyncParticipant(selectedLadderId, p.userId, p.teamId, p.summonerName, p.currentLp))
+          ).then(async () => {
+            const refreshed = await loadLadderDetails(selectedLadderId);
+            setLadderDetails(refreshed);
+          }).catch(e => console.error("Error en sincronización automática 12h: ", e));
+        }
+      }
     } catch (err) {
       console.error('Error al cargar detalles del ladder', err);
     }
@@ -3074,7 +3094,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const handleUpdateProfile = async (e) => {
     e.preventDefault();
     try {
-      await updateUserProfile(currentUserId, editSummonerName, editPrivacy, editTier, editDivision, editLp);
+      await updateUserProfile(currentUserId, editSummonerName, editPrivacy);
       await fetchMyProfile();
       if (selectedLadderId) {
         await fetchLadderDetails();
@@ -3088,7 +3108,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
 
   const handleSyncGames = async () => {
     if (!profile?.summoner_name) {
-      alert('Primero debes registrar tu Summoner Name en tu perfil para sincronizar partidas.');
+      alert('Primero debes registrar tu Summoner Name en tu perfil para actualizar tus puntos.');
       setShowProfileModal(true);
       return;
     }
@@ -3099,9 +3119,9 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
     setTimeout(async () => {
       try {
         setSyncStatus('Descargando partidas recientes...');
-        await syncUserGames(currentUserId, teamCode, profile.summoner_name);
+        const result = await syncUserGames(currentUserId, teamCode, profile.summoner_name, true);
         
-        setSyncStatus('Sincronizando clasificación...');
+        setSyncStatus('Actualizando clasificación...');
         await fetchMyProfile();
         await fetchLadderDetails();
         
@@ -3111,13 +3131,16 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
           setUserGames(games);
         }
         
-        setSyncStatus('¡Completado!');
+        setSyncStatus(result.status || '¡Completado!');
         setTimeout(() => {
           setSyncing(false);
           setSyncStatus('');
-        }, 800);
+          if (result.gamesAdded === 0 && result.status) {
+            alert(result.status);
+          }
+        }, 1200);
       } catch (err) {
-        alert('Error al sincronizar partidas: ' + err.message);
+        alert('Error al actualizar puntos: ' + err.message);
         setSyncing(false);
         setSyncStatus('');
       }
@@ -3257,7 +3280,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
               onClick={handleSyncGames}
               disabled={syncing}
             >
-              {syncing ? '⌛ ' + syncStatus : '🔄 Sincronizar OP.GG'}
+              {syncing ? '⌛ ' + syncStatus : '🔄 Refresh Puntos'}
             </button>
           </div>
         </div>
@@ -3576,6 +3599,11 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                   placeholder="Ej: Faker#KR1"
                   required
                 />
+                {editSummonerName.trim() && (
+                  <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    Rango detectado automáticamente: <strong className="text-gold">{getRankName(getSummonerDeterministicLpValue(editSummonerName))}</strong>
+                  </div>
+                )}
               </div>
 
               <div className="form-group">
@@ -3590,56 +3618,8 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                 </select>
               </div>
 
-              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
-                <span className="mono text-xs uppercase text-gold tracking-wider block mb-2">Mi Rango Inicial de SoloQ</span>
-                <div className="flex gap-2 flex-wrap">
-                  <div className="flex-1" style={{ minWidth: '120px' }}>
-                    <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>Liga</label>
-                    <select 
-                      className="form-input" 
-                      value={editTier} 
-                      onChange={e => {
-                        setEditTier(e.target.value);
-                        if (['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(e.target.value)) {
-                          setEditDivision('');
-                        } else if (!editDivision) {
-                          setEditDivision('IV');
-                        }
-                      }}
-                    >
-                      {TIERS.map(t => (
-                        <option key={t} value={t}>{t}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {!['MASTER', 'GRANDMASTER', 'CHALLENGER', 'UNRANKED'].includes(editTier) && (
-                    <div style={{ width: '80px' }}>
-                      <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>División</label>
-                      <select 
-                        className="form-input" 
-                        value={editDivision} 
-                        onChange={e => setEditDivision(e.target.value)}
-                      >
-                        {DIVISIONS.map(d => (
-                          <option key={d} value={d}>{d}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-
-                  <div style={{ width: '100px' }}>
-                    <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>Puntos LP</label>
-                    <input 
-                      type="number" 
-                      className="form-input" 
-                      value={editLp} 
-                      onChange={e => setEditLp(Math.max(0, parseInt(e.target.value) || 0))}
-                      min="0"
-                      max={['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(editTier) ? '9999' : '99'}
-                    />
-                  </div>
-                </div>
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }} className="text-xs text-muted">
+                ℹ️ Tu Elo y clasificación se resolverán automáticamente basándose en tu Summoner Name (ej: nombres como "Faker" darán Retador, mientras que otros nombres asignarán rangos realistas de Hierro a Diamante).
               </div>
 
               <div className="flex items-center justify-end gap-2 mt-4">

@@ -53,6 +53,17 @@ function findRuns(pred) {
 
 function uid() { return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`; }
 
+let globalAudioCtx = null;
+function getAudioCtx() {
+  if (typeof window === 'undefined') return null;
+  const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
+  if (!AudioCtxClass) return null;
+  if (!globalAudioCtx) {
+    globalAudioCtx = new AudioCtxClass();
+  }
+  return globalAudioCtx;
+}
+
 /* ═══════════════════════════ MAIN APP ═══════════════════════════ */
 
 export default function App() {
@@ -1577,12 +1588,17 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
     sup: redPicks.sup || '',
   });
 
-  // Sound generator helper using Web Audio API
+  // Sound generator helper using Web Audio API (reusing cached context to avoid CPU thread blocking)
   const playBeep = useCallback((freq = 440, duration = 0.2) => {
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const audioCtx = new AudioCtx();
+      const audioCtx = getAudioCtx();
+      if (!audioCtx) return;
+
+      // Resume context if suspended (browser security autoplays requirement)
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume().catch(() => {});
+      }
+
       const oscillator = audioCtx.createOscillator();
       const gainNode = audioCtx.createGain();
 

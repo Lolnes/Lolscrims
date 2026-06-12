@@ -12,13 +12,13 @@
      se renderizan en oscuro en vez del blanco por defecto del navegador */
   color-scheme: dark;
 
-  /* Background layers */
-  --bg-deepest: #060a10;
-  --bg-primary: #0a0e14;
-  --bg-secondary: #111827;
-  --bg-elevated: #1a2332;
-  --bg-surface: #1e293b;
-  --bg-hover: #243044;
+  /* Background layers (League of Legends cool navy/slate client colors) */
+  --bg-deepest: #010a13;
+  --bg-primary: #091428;
+  --bg-secondary: #0d1624;
+  --bg-elevated: #152238;
+  --bg-surface: #1c2e4a;
+  --bg-hover: #243b5e;
 
   /* Gold palette (LoL signature) */
   --gold-primary: #c9aa71;
@@ -836,10 +836,11 @@ select.input {
 
 /* ---------- Comp Editor ---------- */
 .comp-editor {
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-gold);
+  background: linear-gradient(145deg, var(--bg-secondary), var(--bg-primary));
+  border: 1px solid var(--gold-dark);
   border-radius: var(--radius-xl);
-  padding: 1.25rem;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-lg), 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.05);
 }
 
 .comp-slots {

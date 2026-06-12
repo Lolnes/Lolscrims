@@ -20,6 +20,9 @@ import {
   acceptJoinRequest, rejectJoinRequest, removeMemberFromTeam,
   transferCaptain,
   getTeamWindows, sendScrimRequest, loadIncomingScrimRequests, respondScrimRequest,
+  getUserProfile, updateUserProfile, createLadder, loadTeamLadders, loadLadderDetails,
+  ensureUserInLadder, sendLadderInvite, loadIncomingLadderInvites, respondLadderInvite,
+  loadUserGames, syncUserGames, TIERS, DIVISIONS, lpToRank,
 } from './storage';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { formatDiscord } from './utils/discord';
@@ -308,6 +311,7 @@ export default function App() {
     { id: 'schedule', label: 'Horarios',      icon: '📅' },
     { id: 'comps',    label: 'Composiciones', icon: '⚔️' },
     { id: 'scrims',   label: 'Scrims',        icon: '📝' },
+    { id: 'ladder',   label: 'Ladder',        icon: '🏆' },
     { id: 'stats',    label: 'Stats',         icon: '📊' },
     ...(myTeamRole === 'captain' ? [{ id: 'captain', label: 'Capitán', icon: '👑' }] : []),
   ];
@@ -450,6 +454,16 @@ export default function App() {
           threshold={threshold}
           comps={comps}
           scrims={scrims}
+        />
+      )}
+      {tab === 'ladder' && (
+        <LadderTab
+          teamCode={teamCode}
+          teamName={teamName}
+          currentUserId={currentUserId}
+          currentUserName={currentUserName}
+          myTeamRole={myTeamRole}
+          players={players}
         />
       )}
 
@@ -2929,6 +2943,859 @@ function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, team
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   LADDER TAB (Clasificación y Tracker)
+   ═══════════════════════════════════════════════════════════════════ */
+
+function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamRole, players }) {
+  const [profile, setProfile] = useState(null);
+  const [ladders, setLadders] = useState([]);
+  const [selectedLadderId, setSelectedLadderId] = useState('');
+  const [ladderDetails, setLadderDetails] = useState(null);
+  const [incomingInvites, setIncomingInvites] = useState([]);
+  const [userGames, setUserGames] = useState([]);
+  const [activeGameViewerUser, setActiveGameViewerUser] = useState('');
+  const [activeGameViewerName, setActiveGameViewerName] = useState('');
+  const [activeGameViewerPrivacy, setActiveGameViewerPrivacy] = useState('public');
+  
+  const [loading, setLoading] = useState(true);
+  const [syncing, setSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState('');
+
+  // Modals
+  const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showInviteModal, setShowInviteModal] = useState(false);
+
+  // Forms
+  const [editSummonerName, setEditSummonerName] = useState('');
+  const [editPrivacy, setEditPrivacy] = useState('public');
+  const [editTier, setEditTier] = useState('UNRANKED');
+  const [editDivision, setEditDivision] = useState('IV');
+  const [editLp, setEditLp] = useState(0);
+
+  const [newLadderName, setNewLadderName] = useState('');
+  const [newLadderType, setNewLadderType] = useState('soloq');
+  const [newLadderPeriod, setNewLadderPeriod] = useState('monthly');
+  const [newLadderEndDate, setNewLadderEndDate] = useState('');
+
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+
+  const isLeader = myTeamRole === 'captain' || myTeamRole === 'coach' || myTeamRole === 'manager';
+
+  // Cargar perfil del propio invocador
+  const fetchMyProfile = useCallback(async () => {
+    try {
+      const p = await getUserProfile(currentUserId);
+      if (p) {
+        setProfile(p);
+        setEditSummonerName(p.summoner_name || '');
+        setEditPrivacy(p.games_privacy || 'public');
+        setEditTier(p.current_tier || 'UNRANKED');
+        setEditDivision(p.current_division || 'IV');
+        setEditLp(p.current_lp || 0);
+      }
+    } catch (err) {
+      console.error('Error al cargar perfil', err);
+    }
+  }, [currentUserId]);
+
+  // Cargar ladders del equipo e invitaciones
+  const fetchLadders = useCallback(async () => {
+    try {
+      const list = await loadTeamLadders(teamCode);
+      setLadders(list);
+      if (list.length > 0 && !selectedLadderId) {
+        setSelectedLadderId(list[0].id);
+      }
+      
+      if (isLeader) {
+        const invites = await loadIncomingLadderInvites(teamCode);
+        setIncomingInvites(invites);
+      }
+    } catch (err) {
+      console.error('Error al cargar ladders', err);
+    }
+  }, [teamCode, isLeader, selectedLadderId]);
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([fetchMyProfile(), fetchLadders()]).finally(() => setLoading(false));
+  }, [fetchMyProfile, fetchLadders]);
+
+  // Cargar detalles del ladder seleccionado
+  const fetchLadderDetails = useCallback(async () => {
+    if (!selectedLadderId) {
+      setLadderDetails(null);
+      return;
+    }
+    try {
+      // Auto-inscripción del usuario si no está
+      await ensureUserInLadder(selectedLadderId, currentUserId, teamCode);
+      const details = await loadLadderDetails(selectedLadderId);
+      setLadderDetails(details);
+      
+      // Mostrar por defecto las partidas del usuario actual si está en el ladder
+      if (details && !activeGameViewerUser) {
+        setActiveGameViewerUser(currentUserId);
+        setActiveGameViewerName(profile?.summoner_name || currentUserName);
+        setActiveGameViewerPrivacy(profile?.games_privacy || 'public');
+      }
+    } catch (err) {
+      console.error('Error al cargar detalles del ladder', err);
+    }
+  }, [selectedLadderId, currentUserId, teamCode, activeGameViewerUser, profile, currentUserName]);
+
+  useEffect(() => {
+    fetchLadderDetails();
+  }, [fetchLadderDetails]);
+
+  // Cargar historial de partidas del invocador seleccionado
+  useEffect(() => {
+    if (!activeGameViewerUser) {
+      setUserGames([]);
+      return;
+    }
+    if (activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId) {
+      setUserGames([]);
+      return;
+    }
+    loadUserGames(activeGameViewerUser)
+      .then(setUserGames)
+      .catch(err => console.error('Error al cargar partidas del invocador', err));
+  }, [activeGameViewerUser, activeGameViewerPrivacy, currentUserId]);
+
+  const handleUpdateProfile = async (e) => {
+    e.preventDefault();
+    try {
+      await updateUserProfile(currentUserId, editSummonerName, editPrivacy, editTier, editDivision, editLp);
+      await fetchMyProfile();
+      if (selectedLadderId) {
+        await fetchLadderDetails();
+      }
+      setShowProfileModal(false);
+      alert('Perfil de Invocador actualizado correctamente.');
+    } catch (err) {
+      alert('Error al actualizar perfil: ' + err.message);
+    }
+  };
+
+  const handleSyncGames = async () => {
+    if (!profile?.summoner_name) {
+      alert('Primero debes registrar tu Summoner Name en tu perfil para sincronizar partidas.');
+      setShowProfileModal(true);
+      return;
+    }
+    setSyncing(true);
+    setSyncStatus('Conectando con Riot API...');
+    
+    // Pequeño timeout para dar feedback visual de simulación
+    setTimeout(async () => {
+      try {
+        setSyncStatus('Descargando partidas recientes...');
+        await syncUserGames(currentUserId, teamCode, profile.summoner_name);
+        
+        setSyncStatus('Sincronizando clasificación...');
+        await fetchMyProfile();
+        await fetchLadderDetails();
+        
+        // Recargar partidas si el viewer está enfocado en nosotros
+        if (activeGameViewerUser === currentUserId) {
+          const games = await loadUserGames(currentUserId);
+          setUserGames(games);
+        }
+        
+        setSyncStatus('¡Completado!');
+        setTimeout(() => {
+          setSyncing(false);
+          setSyncStatus('');
+        }, 800);
+      } catch (err) {
+        alert('Error al sincronizar partidas: ' + err.message);
+        setSyncing(false);
+        setSyncStatus('');
+      }
+    }, 1500);
+  };
+
+  const handleCreateLadder = async (e) => {
+    e.preventDefault();
+    if (!newLadderEndDate) {
+      alert('Debes seleccionar una fecha de finalización.');
+      return;
+    }
+    try {
+      const endDate = new Date(newLadderEndDate).toISOString();
+      const newId = await createLadder(teamCode, newLadderName, newLadderType, newLadderPeriod, endDate, currentUserId);
+      setSelectedLadderId(newId);
+      await fetchLadders();
+      setShowCreateModal(false);
+      setNewLadderName('');
+      setNewLadderEndDate('');
+      alert('Ladder creado con éxito.');
+    } catch (err) {
+      alert('Error al crear ladder: ' + err.message);
+    }
+  };
+
+  const handleSearchTeams = async (e) => {
+    e.preventDefault();
+    if (!searchQuery.trim()) return;
+    setSearching(true);
+    try {
+      const results = await searchPublicTeams(searchQuery);
+      // Excluir mi propio equipo
+      setSearchResults(results.filter(t => t.id !== teamCode));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const handleSendInvite = async (toTeamId) => {
+    if (!selectedLadderId) return;
+    try {
+      await sendLadderInvite(selectedLadderId, teamCode, toTeamId);
+      alert('Invitación enviada con éxito.');
+      setShowInviteModal(false);
+      setSearchQuery('');
+      setSearchResults([]);
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+
+  const handleRespondInvite = async (inviteId, accept) => {
+    const action = accept ? 'aceptar' : 'rechazar';
+    if (!window.confirm(`¿Seguro que deseas ${action} esta invitación de ladder?`)) return;
+    try {
+      await respondLadderInvite(inviteId, accept);
+      await fetchLadders();
+      alert(`Invitación ${accept ? 'aceptada' : 'rechazada'} correctamente.`);
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
+  };
+
+  // Convertir LP numérico a texto de rango en español
+  const getRankName = (lpVal) => {
+    if (lpVal === undefined || lpVal <= 0) return 'Unranked';
+    const rank = lpToRank(lpVal);
+    // Traducir rangos comunes al español para consistencia
+    const translation = {
+      'IRON': 'Hierro', 'BRONZE': 'Bronce', 'SILVER': 'Plata', 'GOLD': 'Oro',
+      'PLATINUM': 'Platino', 'EMERALD': 'Esmeralda', 'DIAMOND': 'Diamante',
+      'MASTER': 'Maestro', 'GRANDMASTER': 'Gran Maestro', 'CHALLENGER': 'Retador'
+    };
+    const tierSpanish = translation[rank.tier] || rank.tier;
+    if (rank.tier === 'MASTER' || rank.tier === 'GRANDMASTER' || rank.tier === 'CHALLENGER') {
+      return `${tierSpanish} (${rank.lp} LP)`;
+    }
+    return `${tierSpanish} ${rank.division} (${rank.lp} LP)`;
+  };
+
+  function formatRelativeTime(dateStr) {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return 'Hace unos segundos';
+    if (mins < 60) return `Hace ${mins} min`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `Hace ${hours} h`;
+    const days = Math.floor(hours / 24);
+    return `Hace ${days} d`;
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center p-12">
+        <div className="text-muted mono text-sm">Cargando clasificación y tracker de invocadores…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="ladder-tab-container">
+      
+      {/* 1. Header: Perfil de Invocador del usuario actual */}
+      <div className="summoner-profile-bar card mb-6">
+        <div className="flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-4">
+            <div className="summoner-profile-bar__avatar">
+              🏆
+            </div>
+            <div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="summoner-profile-bar__name">
+                  {profile?.summoner_name || 'Sin Invocador Registrado'}
+                </span>
+                <span className="mono text-xs text-muted">
+                  ({currentUserName})
+                </span>
+                {profile?.games_privacy === 'private' && (
+                  <span className="privacy-badge privacy-badge--private">Privado</span>
+                )}
+              </div>
+              <div className="summoner-profile-bar__rank">
+                Rango Actual: <span className="text-gold font-bold">{getRankName(profile?.current_lp_value)}</span>
+              </div>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-2 flex-wrap">
+            <button className="btn btn--secondary flex items-center gap-1" onClick={() => setShowProfileModal(true)}>
+              ⚙️ Mi Invocador
+            </button>
+            <button 
+              className={`btn btn--primary flex items-center gap-1 ${syncing ? 'btn--disabled' : ''}`} 
+              onClick={handleSyncGames}
+              disabled={syncing}
+            >
+              {syncing ? '⌛ ' + syncStatus : '🔄 Sincronizar OP.GG'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Alertas de Invitaciones Recibidas (Capitán/Coach/Manager) */}
+      {incomingInvites.length > 0 && (
+        <div className="card mb-6" style={{ borderColor: 'var(--border-gold)', background: 'rgba(201,170,113,0.05)' }}>
+          <h3 className="text-gold uppercase text-xs mb-3 flex items-center gap-1">
+            ✉️ Retos e Invitaciones a Ladder Pendientes ({incomingInvites.length})
+          </h3>
+          <div className="flex flex-col gap-3">
+            {incomingInvites.map(invite => (
+              <div key={invite.id} className="flex items-center justify-between gap-4 flex-wrap p-3" style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
+                <div>
+                  <span className="font-bold text-sm text-primary">{invite.fromTeamName}</span> te invita a unirte a su ranked ladder <span className="font-bold text-gold">"{invite.ladderName}"</span>.
+                </div>
+                <div className="flex items-center gap-2">
+                  <button className="btn btn--primary" style={{ padding: '0.3rem 0.8rem', fontSize: '0.75rem' }} onClick={() => handleRespondInvite(invite.id, true)}>
+                    Aceptar
+                  </button>
+                  <button className="btn btn--secondary" style={{ padding: '0.3rem 0.8rem', fontSize: '0.75rem' }} onClick={() => handleRespondInvite(invite.id, false)}>
+                    Rechazar
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 2. Main content: selector, list y ranking */}
+      <div className="ladder-main-layout">
+        
+        {/* Barra Lateral: Lista de Ladders */}
+        <div className="ladder-sidebar">
+          <div className="card h-full flex flex-col justify-between">
+            <div>
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="uppercase text-xs tracking-wider text-muted">Mis Ladders</h2>
+                {isLeader && (
+                  <button className="btn btn--secondary" style={{ padding: '0.2rem 0.5rem', fontSize: '0.7rem' }} onClick={() => setShowCreateModal(true)}>
+                    + Nuevo
+                  </button>
+                )}
+              </div>
+              
+              {ladders.length === 0 ? (
+                <div className="text-muted text-xs p-4 text-center">
+                  No estás participando en ningún ladder. {isLeader ? '¡Crea uno nuevo para competir!' : 'El capitán debe crear uno.'}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {ladders.map(l => (
+                    <button
+                      key={l.id}
+                      className={`ladder-item-btn ${selectedLadderId === l.id ? 'ladder-item-btn--active' : ''}`}
+                      onClick={() => {
+                        setSelectedLadderId(l.id);
+                        setActiveGameViewerUser(''); // Reset viewer
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="ladder-item-btn__title truncate">{l.name}</span>
+                        <span className={`ladder-type-badge ${l.type === 'flex' ? 'flex' : 'soloq'}`}>
+                          {l.type === 'flex' ? 'Flex' : 'SoloQ'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-faint mt-1" style={{ fontSize: '0.65rem' }}>
+                        <span>De: {l.ownerTeamName}</span>
+                        <span>F. Fin: {new Date(l.endDate).toLocaleDateString()}</span>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {selectedLadderId && isLeader && (
+              <button 
+                className="btn btn--secondary mt-6 w-full text-center flex items-center justify-center gap-1"
+                style={{ fontSize: '0.75rem', padding: '0.4rem' }}
+                onClick={() => setShowInviteModal(true)}
+              >
+                ⚔️ Invitar Equipo Rival
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Clasificación (Leaderboard) */}
+        <div className="ladder-content flex flex-col gap-6">
+          
+          {ladderDetails ? (
+            <div className="card">
+              <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
+                <div>
+                  <h2 className="text-lg font-bold text-gold flex items-center gap-2">
+                    {ladderDetails.name}
+                    <span className={`ladder-type-badge ${ladderDetails.type === 'flex' ? 'flex' : 'soloq'}`}>
+                      {ladderDetails.type === 'flex' ? 'Flex' : 'SoloQ'}
+                    </span>
+                  </h2>
+                  <div className="text-xs text-muted mt-1">
+                    Organizado por: <span className="font-bold">{ladderDetails.participants[0]?.teamName || teamName}</span> | 
+                    Finaliza el: <span className="font-bold text-primary">{new Date(ladderDetails.endDate).toLocaleDateString()}</span>
+                  </div>
+                </div>
+                <div className="text-xs text-faint">
+                  Equipos participantes: <span className="text-primary font-bold">{ladderDetails.teams.map(t => t.name).join(', ')}</span>
+                </div>
+              </div>
+
+              <div style={{ overflowX: 'auto' }}>
+                <table className="ladder-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '40px', textAlign: 'center' }}>Pos</th>
+                      <th>Invocador</th>
+                      <th>Equipo</th>
+                      <th className="hidden-mobile">Rango Inicial</th>
+                      <th>Rango Actual</th>
+                      <th style={{ textAlign: 'right' }}>Progreso</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ladderDetails.participants.length === 0 ? (
+                      <tr>
+                        <td colSpan="6" style={{ textAlign: 'center' }} className="text-muted p-4">
+                          No hay participantes registrados en este ladder.
+                        </td>
+                      </tr>
+                    ) : (
+                      ladderDetails.participants.map((p, idx) => {
+                        const isMe = p.userId === currentUserId;
+                        const isSelectedForGames = p.userId === activeGameViewerUser;
+                        
+                        return (
+                          <tr 
+                            key={p.userId} 
+                            className={`ladder-row-tr ${isMe ? 'ladder-row-tr--me' : ''} ${isSelectedForGames ? 'ladder-row-tr--selected' : ''}`}
+                            onClick={() => {
+                              setActiveGameViewerUser(p.userId);
+                              setActiveGameViewerName(p.summonerName || p.userName);
+                              setActiveGameViewerPrivacy(p.gamesPrivacy);
+                            }}
+                            style={{ cursor: 'pointer' }}
+                          >
+                            <td style={{ textAlign: 'center', fontWeight: 'bold' }}>
+                              {idx + 1 === 1 ? '🥇' : idx + 1 === 2 ? '🥈' : idx + 1 === 3 ? '🥉' : `#${idx + 1}`}
+                            </td>
+                            <td>
+                              <div className="flex items-center gap-2">
+                                <span className="summoner-name-cell font-bold">
+                                  {p.summonerName || 'Sin Registrar'}
+                                </span>
+                                <span className="mono text-muted text-xs">({p.userName})</span>
+                                {p.gamesPrivacy === 'private' && (
+                                  <span className="privacy-badge privacy-badge--private-mini">P</span>
+                                )}
+                              </div>
+                            </td>
+                            <td>
+                              <span className="text-xs px-2 py-0.5 rounded text-primary" style={{ background: 'rgba(59,130,246,0.1)' }}>
+                                {p.teamName}
+                              </span>
+                            </td>
+                            <td className="text-muted text-xs hidden-mobile">
+                              {getRankName(p.startLp)}
+                            </td>
+                            <td className="font-bold text-xs text-gold">
+                              {getRankName(p.currentLp)}
+                            </td>
+                            <td style={{ textAlign: 'right', fontWeight: 'bold' }} className={p.delta > 0 ? 'text-green' : p.delta < 0 ? 'text-red' : 'text-muted'}>
+                              {p.delta > 0 ? `+${p.delta} LP` : p.delta < 0 ? `${p.delta} LP` : '0 LP'}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ) : (
+            <div className="card text-center p-8 text-muted">
+              Selecciona un ladder de la lista lateral o crea uno nuevo para empezar.
+            </div>
+          )}
+
+          {/* 3. OP.GG / Probuilds Game History Tracker */}
+          {activeGameViewerUser && (
+            <div className="card">
+              <div className="flex items-center justify-between mb-4 border-b border-faint pb-3">
+                <h3 className="font-bold text-md text-gold flex items-center gap-2">
+                  🛡️ Historial de Partidas Recientes — <span className="text-primary">{activeGameViewerName}</span>
+                </h3>
+                {activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId && (
+                  <span className="privacy-badge privacy-badge--private">Privado</span>
+                )}
+              </div>
+
+              {activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId ? (
+                <div className="text-center p-8 text-muted mono text-sm">
+                  🔒 Este invocador ha configurado su historial de partidas como privado.
+                </div>
+              ) : userGames.length === 0 ? (
+                <div className="text-center p-8 text-muted mono text-sm">
+                  No hay partidas registradas para este invocador. 
+                  {activeGameViewerUser === currentUserId && " ¡Haz clic en 'Sincronizar OP.GG' en la parte superior para registrar tus partidas!"}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-3">
+                  {userGames.map(game => {
+                    const isWin = game.result === 'win';
+                    const relativeTime = formatRelativeTime(game.playedAt);
+                    
+                    return (
+                      <div 
+                        key={game.id} 
+                        className={`game-history-card ${isWin ? 'game-history-card--win' : 'game-history-card--loss'}`}
+                      >
+                        <div className="game-history-card__row flex items-center gap-4 flex-wrap justify-between">
+                          <div className="flex items-center gap-3">
+                            <div className="game-history-card__champ-container">
+                              <span className="game-history-card__champ-emoji">⚔️</span>
+                              <div>
+                                <div className="game-history-card__champ-name font-bold">
+                                  {game.champion}
+                                </div>
+                                <div className="uppercase text-faint tracking-wider" style={{ fontSize: '0.6rem' }}>
+                                  {game.role === 'jg' ? 'Jungla' : game.role === 'sup' ? 'Soporte' : game.role.toUpperCase()}
+                                </div>
+                              </div>
+                            </div>
+                            
+                            <div className="separator" style={{ borderLeft: '1px solid var(--border)', height: '24px' }}></div>
+                            
+                            <div>
+                              <div className="game-history-card__kda font-mono font-bold text-sm">
+                                {game.kills} / <span className="text-red-bright">{game.deaths}</span> / {game.assists}
+                              </div>
+                              <div className="text-faint" style={{ fontSize: '0.7rem' }}>
+                                KDA: {((game.kills + game.assists) / Math.max(1, game.deaths)).toFixed(2)}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-4 text-right">
+                            <div>
+                              <div className={`font-bold ${isWin ? 'text-primary' : 'text-red'}`} style={{ fontSize: '0.9rem' }}>
+                                {isWin ? 'Victoria' : 'Derrota'}
+                              </div>
+                              <div className="text-faint text-xs">{relativeTime}</div>
+                            </div>
+                            
+                            <div className="separator" style={{ borderLeft: '1px solid var(--border)', height: '24px' }}></div>
+
+                            <div>
+                              <div className={`font-bold ${game.lpChange > 0 ? 'text-green' : 'text-red'}`} style={{ fontSize: '0.9rem' }}>
+                                {game.lpChange > 0 ? `+${game.lpChange} LP` : `${game.lpChange} LP`}
+                              </div>
+                              <div className="text-faint" style={{ fontSize: '0.65rem' }}>SoloQ</div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Cruces detectados en esta partida */}
+                        {game.playersMatched && game.playersMatched.length > 0 && (
+                          <div className="game-matched-players-row flex flex-wrap gap-2 mt-3 pt-2">
+                            {game.playersMatched.map((m, mIdx) => (
+                              <span 
+                                key={mIdx} 
+                                className={`matched-player-badge ${m.sameTeam ? 'matched-player-badge--ally' : 'matched-player-badge--enemy'}`}
+                              >
+                                {m.sameTeam ? '🤝 Aliado con' : '⚔️ vs'} <strong className="text-gold">{m.summonerName}</strong> ({m.champion}) {m.result === 'win' ? '🏆' : '💀'}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+        </div>
+
+      </div>
+
+      {/* 4. MODALS */}
+
+      {/* Modal 1: Configurar Perfil de Invocador */}
+      {showProfileModal && (
+        <div className="modal-overlay" onClick={() => setShowProfileModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
+            <div className="modal__header">
+              <h3 className="modal__title text-gold uppercase">Configurar Mi Invocador</h3>
+              <button 
+                onClick={() => setShowProfileModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            <form onSubmit={handleUpdateProfile} className="flex flex-col gap-4">
+              <div className="form-group">
+                <label className="form-label">Summoner Name (LoL Account)</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={editSummonerName} 
+                  onChange={e => setEditSummonerName(e.target.value)}
+                  placeholder="Ej: Faker#KR1"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Privacidad del Historial</label>
+                <select 
+                  className="form-input" 
+                  value={editPrivacy} 
+                  onChange={e => setEditPrivacy(e.target.value)}
+                >
+                  <option value="public">Público (Todos pueden ver tus partidas)</option>
+                  <option value="private">Privado (Solo tú ves tus partidas, pero puntúas en el ladder)</option>
+                </select>
+              </div>
+
+              <div style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem' }}>
+                <span className="mono text-xs uppercase text-gold tracking-wider block mb-2">Mi Rango Inicial de SoloQ</span>
+                <div className="flex gap-2 flex-wrap">
+                  <div className="flex-1" style={{ minWidth: '120px' }}>
+                    <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>Liga</label>
+                    <select 
+                      className="form-input" 
+                      value={editTier} 
+                      onChange={e => {
+                        setEditTier(e.target.value);
+                        if (['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(e.target.value)) {
+                          setEditDivision('');
+                        } else if (!editDivision) {
+                          setEditDivision('IV');
+                        }
+                      }}
+                    >
+                      {TIERS.map(t => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {!['MASTER', 'GRANDMASTER', 'CHALLENGER', 'UNRANKED'].includes(editTier) && (
+                    <div style={{ width: '80px' }}>
+                      <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>División</label>
+                      <select 
+                        className="form-input" 
+                        value={editDivision} 
+                        onChange={e => setEditDivision(e.target.value)}
+                      >
+                        {DIVISIONS.map(d => (
+                          <option key={d} value={d}>{d}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
+                  <div style={{ width: '100px' }}>
+                    <label className="form-label text-faint" style={{ fontSize: '0.65rem' }}>Puntos LP</label>
+                    <input 
+                      type="number" 
+                      className="form-input" 
+                      value={editLp} 
+                      onChange={e => setEditLp(Math.max(0, parseInt(e.target.value) || 0))}
+                      min="0"
+                      max={['MASTER', 'GRANDMASTER', 'CHALLENGER'].includes(editTier) ? '9999' : '99'}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 mt-4">
+                <button type="button" className="btn btn--secondary" onClick={() => setShowProfileModal(false)}>
+                  Cancelar
+                </button>
+                <button type="submit" className="btn btn--primary">
+                  Guardar Perfil
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 2: Crear Nuevo Ladder */}
+      {showCreateModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '450px' }}>
+            <div className="modal__header">
+              <h3 className="modal__title text-gold uppercase">Crear Ranked Ladder</h3>
+              <button 
+                onClick={() => setShowCreateModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            <form onSubmit={handleCreateLadder} className="flex flex-col gap-4">
+              <div className="form-group">
+                <label className="form-label">Nombre de la competencia</label>
+                <input 
+                  type="text" 
+                  className="form-input" 
+                  value={newLadderName} 
+                  onChange={e => setNewLadderName(e.target.value)}
+                  placeholder="Ej: SoloQ Challenge Invierno"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Tipo de Ranked</label>
+                <select 
+                  className="form-input" 
+                  value={newLadderType} 
+                  onChange={e => setNewLadderType(e.target.value)}
+                >
+                  <option value="soloq">SoloQ (Clasificatoria en Solitario / Dúo)</option>
+                  <option value="flex">FlexQ (Clasificatoria Flexible)</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Período de Duración</label>
+                <select 
+                  className="form-input" 
+                  value={newLadderPeriod} 
+                  onChange={e => setNewLadderPeriod(e.target.value)}
+                >
+                  <option value="weekly">Semanal</option>
+                  <option value="monthly">Mensual</option>
+                  <option value="season">Por Season / Temporada</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">Fecha de Finalización</label>
+                <input 
+                  type="date" 
+                  className="form-input" 
+                  value={newLadderEndDate} 
+                  onChange={e => setNewLadderEndDate(e.target.value)}
+                  required
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 mt-4">
+                <button type="button" className="btn btn--secondary" onClick={() => setShowCreateModal(false)}>
+                  Cancelar
+                </button>
+                <button type="submit" className="btn btn--primary">
+                  Crear Competencia
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal 3: Invitar Equipo Rival */}
+      {showInviteModal && (
+        <div className="modal-overlay" onClick={() => setShowInviteModal(false)}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px' }}>
+            <div className="modal__header">
+              <h3 className="modal__title text-gold uppercase">Invitar Equipo al Ladder</h3>
+              <button 
+                onClick={() => setShowInviteModal(false)}
+                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+              >
+                &times;
+              </button>
+            </div>
+            
+            <div className="mb-4 text-xs text-muted">
+              Crea un SoloQ Challenge multiequipo invitando a otros clubes registrados en la base de datos.
+            </div>
+
+            <form onSubmit={handleSearchTeams} className="flex gap-2 mb-4">
+              <input 
+                type="text" 
+                className="form-input" 
+                value={searchQuery} 
+                onChange={e => setSearchQuery(e.target.value)}
+                placeholder="Buscar equipo por nombre..."
+                required
+              />
+              <button type="submit" className="btn btn--primary" disabled={searching}>
+                {searching ? 'Buscando...' : 'Buscar'}
+              </button>
+            </form>
+
+            <div className="flex flex-col gap-2" style={{ maxHeight: '200px', overflowY: 'auto' }}>
+              {searchResults.length === 0 ? (
+                <div className="text-muted text-xs p-4 text-center">
+                  {searchQuery ? 'No se encontraron equipos.' : 'Ingresa un nombre para buscar.'}
+                </div>
+              ) : (
+                searchResults.map(team => (
+                  <div key={team.id} className="flex items-center justify-between p-2 rounded" style={{ background: 'var(--bg-primary)', border: '1px solid var(--border)' }}>
+                    <div>
+                      <span className="font-bold text-sm text-primary">{team.name}</span>
+                      <div className="text-faint" style={{ fontSize: '0.65rem' }}>Código: {team.id} | Integrantes: {team.memberCount}</div>
+                    </div>
+                    <button 
+                      className="btn btn--secondary" 
+                      style={{ padding: '0.2rem 0.6rem', fontSize: '0.7rem' }}
+                      onClick={() => handleSendInvite(team.id)}
+                    >
+                      Invitar
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            
+            <div className="flex justify-end mt-4">
+              <button className="btn btn--secondary" onClick={() => setShowInviteModal(false)}>
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
     </div>
   );
 }

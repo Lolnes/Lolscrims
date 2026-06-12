@@ -1334,3 +1334,329 @@ h3 { font-size: 1rem; font-weight: 500; }
     min-height: 2.5rem;
   }
 }
+
+/* ========================================================================
+   FASE 3: LADDER Y TRACKER (Estilo Cliente LoL)
+   ======================================================================== */
+
+.ladder-tab-container {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  animation: fadeIn 200ms var(--ease);
+}
+
+.summoner-profile-bar {
+  background: linear-gradient(90deg, var(--bg-elevated) 0%, rgba(26,35,50,0.4) 100%);
+  border: 1px solid var(--border-gold);
+  box-shadow: 0 0 15px rgba(201, 170, 113, 0.05);
+}
+
+.summoner-profile-bar__avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--gold-dark), var(--gold-primary));
+  border: 2px solid var(--gold-bright);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.5rem;
+  box-shadow: 0 0 10px var(--gold-glow);
+}
+
+.summoner-profile-bar__name {
+  font-family: var(--font-display);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  text-shadow: 0 2px 4px rgba(0,0,0,0.5);
+}
+
+.summoner-profile-bar__rank {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+}
+
+/* Privacy badges */
+.privacy-badge {
+  font-size: 0.65rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.15rem 0.4rem;
+  border-radius: var(--radius-sm);
+  display: inline-block;
+}
+
+.privacy-badge--private {
+  background: var(--purple-chip);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+}
+
+.privacy-badge--private-mini {
+  background: var(--purple-chip);
+  border: 1px solid rgba(168, 85, 247, 0.3);
+  color: #d8b4fe;
+  font-size: 0.55rem;
+  padding: 0 0.2rem;
+  border-radius: 2px;
+  line-height: 1;
+}
+
+/* Ladder Layouts */
+.ladder-main-layout {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .ladder-main-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ladder-sidebar {
+  position: sticky;
+  top: 1rem;
+}
+
+.ladder-item-btn {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: rgba(26,35,50,0.2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.ladder-item-btn:hover {
+  background: var(--bg-hover);
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+}
+
+.ladder-item-btn--active {
+  background: var(--bg-elevated) !important;
+  border-color: var(--gold-primary) !important;
+  color: var(--text-primary) !important;
+  box-shadow: 0 0 10px rgba(201, 170, 113, 0.1);
+}
+
+.ladder-item-btn__title {
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+/* Type badges */
+.ladder-type-badge {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  padding: 0.1rem 0.35rem;
+  border-radius: var(--radius-sm);
+  letter-spacing: 0.05em;
+}
+
+.ladder-type-badge.soloq {
+  background: var(--blue-chip);
+  border: 1px solid var(--blue-border);
+  color: var(--blue-text);
+}
+
+.ladder-type-badge.flex {
+  background: var(--purple-chip);
+  border: 1px solid rgba(168, 85, 247, 0.35);
+  color: #c084fc;
+}
+
+/* Leaderboard Table */
+.ladder-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+}
+
+.ladder-table th, .ladder-table td {
+  padding: 0.75rem 1rem;
+  text-align: left;
+  font-size: 0.8rem;
+}
+
+.ladder-table th {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  font-weight: 500;
+}
+
+.ladder-row-tr {
+  border-bottom: 1px solid var(--border-light);
+  transition: background var(--duration) var(--ease);
+}
+
+.ladder-row-tr:hover {
+  background: rgba(255,255,255,0.015);
+}
+
+.ladder-row-tr--selected {
+  background: rgba(201, 170, 113, 0.04) !important;
+  border-left: 2px solid var(--gold-primary);
+}
+
+.ladder-row-tr--me {
+  background: rgba(59, 130, 246, 0.02);
+}
+
+.summoner-name-cell {
+  color: var(--text-primary);
+}
+
+.ladder-row-tr:hover .summoner-name-cell {
+  color: var(--gold-bright);
+}
+
+/* Game History Tracker */
+.game-history-card {
+  display: flex;
+  flex-direction: column;
+  padding: 0.875rem 1rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  transition: transform 150ms var(--ease), box-shadow 150ms var(--ease);
+}
+
+.game-history-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-sm);
+}
+
+.game-history-card--win {
+  background: rgba(59, 130, 246, 0.04);
+  border-left: 4px solid var(--blue);
+  border-color: rgba(59, 130, 246, 0.15) rgba(59, 130, 246, 0.15) rgba(59, 130, 246, 0.15) var(--blue);
+}
+
+.game-history-card--loss {
+  background: rgba(239, 68, 68, 0.03);
+  border-left: 4px solid var(--red);
+  border-color: rgba(239, 68, 68, 0.15) rgba(239, 68, 68, 0.15) rgba(239, 68, 68, 0.15) var(--red);
+}
+
+.game-history-card__champ-container {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.game-history-card__champ-emoji {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.1rem;
+}
+
+.game-history-card__champ-name {
+  font-family: var(--font-display);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+
+/* Matched players badges */
+.game-matched-players-row {
+  border-top: 1px solid rgba(148, 163, 184, 0.08);
+}
+
+.matched-player-badge {
+  font-size: 0.65rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.matched-player-badge--ally {
+  background: var(--blue-chip);
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  color: var(--blue-text);
+}
+
+.matched-player-badge--enemy {
+  background: var(--red-chip);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: var(--red-text);
+}
+
+/* ---------- Responsive Enhancements for Mobile Devices ---------- */
+@media (max-width: 600px) {
+  .hidden-mobile {
+    display: none !important;
+  }
+  
+  .summoner-profile-bar .flex {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+    text-align: center;
+  }
+  
+  .summoner-profile-bar .flex.items-center.gap-4 {
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  
+  .summoner-profile-bar__avatar {
+    margin: 0 auto;
+  }
+  
+  .summoner-profile-bar .flex-wrap {
+    justify-content: center;
+  }
+  
+  .summoner-profile-bar .btn {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+@media (max-width: 480px) {
+  .game-history-card__row {
+    flex-direction: column !important;
+    align-items: stretch !important;
+    gap: 0.75rem;
+  }
+  
+  .game-history-card__row .text-right {
+    text-align: left !important;
+    justify-content: space-between !important;
+    width: 100%;
+  }
+  
+  .game-history-card__row .separator {
+    display: none !important;
+  }
+  
+  .game-history-card__row .flex.items-center.gap-3 {
+    justify-content: space-between;
+    width: 100%;
+  }
+}
+
+

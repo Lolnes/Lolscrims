@@ -198,6 +198,101 @@ DROP POLICY IF EXISTS "anon_all_scrim_requests" ON scrim_requests;
 CREATE POLICY "anon_all_scrim_requests" ON scrim_requests FOR ALL TO anon USING (true) WITH CHECK (true);
 
 -- ============================================================
+-- 11. FASE 3: LADDERS Y TRACKER DE PARTIDAS (SoloQ / Flex)
+-- ============================================================
+
+-- Columnas de Summoner en users
+ALTER TABLE users ADD COLUMN IF NOT EXISTS summoner_name TEXT DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS games_privacy TEXT NOT NULL DEFAULT 'public'; -- public | private
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_tier TEXT NOT NULL DEFAULT 'UNRANKED';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_division TEXT NOT NULL DEFAULT 'IV';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lp INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS current_lp_value INTEGER NOT NULL DEFAULT 0;
+
+-- Tabla de Ladders
+CREATE TABLE IF NOT EXISTS ladders (
+  id          TEXT PRIMARY KEY,
+  team_id     TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  type        TEXT NOT NULL DEFAULT 'soloq',      -- soloq | flex
+  period      TEXT NOT NULL DEFAULT 'monthly',    -- weekly | monthly | season | custom
+  start_date  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  end_date    TIMESTAMPTZ NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'active',     -- active | completed
+  created_by  TEXT REFERENCES users(id),
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Tabla de Equipos participantes en un Ladder
+CREATE TABLE IF NOT EXISTS ladder_teams (
+  id          TEXT PRIMARY KEY,
+  ladder_id   TEXT NOT NULL REFERENCES ladders(id) ON DELETE CASCADE,
+  team_id     TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  joined_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ladder_teams_unique UNIQUE(ladder_id, team_id)
+);
+
+-- Tabla de Participantes individuales del Ladder
+CREATE TABLE IF NOT EXISTS ladder_participants (
+  id           TEXT PRIMARY KEY,
+  ladder_id    TEXT NOT NULL REFERENCES ladders(id) ON DELETE CASCADE,
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  team_id      TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  start_lp     INTEGER NOT NULL DEFAULT 0,
+  current_lp   INTEGER NOT NULL DEFAULT 0,
+  last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  joined_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ladder_participants_unique UNIQUE(ladder_id, user_id)
+);
+
+-- Tabla de Invitaciones de Ladder entre equipos
+CREATE TABLE IF NOT EXISTS ladder_invites (
+  id           TEXT PRIMARY KEY,
+  ladder_id    TEXT NOT NULL REFERENCES ladders(id) ON DELETE CASCADE,
+  from_team_id TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  to_team_id   TEXT NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+  status       TEXT NOT NULL DEFAULT 'pending',   -- pending | accepted | rejected | cancelled
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ladder_invites_unique UNIQUE(ladder_id, to_team_id)
+);
+
+-- Tabla de historial de partidas de invocador
+CREATE TABLE IF NOT EXISTS summoner_games (
+  id              TEXT PRIMARY KEY,
+  user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  champion        TEXT NOT NULL,
+  role            TEXT NOT NULL,
+  result          TEXT NOT NULL,                  -- win | loss
+  kda_kills       INTEGER NOT NULL DEFAULT 0,
+  kda_deaths      INTEGER NOT NULL DEFAULT 0,
+  kda_assists     INTEGER NOT NULL DEFAULT 0,
+  lp_change       INTEGER NOT NULL DEFAULT 0,
+  played_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  players_matched JSONB DEFAULT '[]'              -- Array de { userId, summonerName, champion, sameTeam, result }
+);
+
+-- Habilitar RLS
+ALTER TABLE ladders             ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ladder_teams        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ladder_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE ladder_invites      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE summoner_games      ENABLE ROW LEVEL SECURITY;
+
+-- Crear políticas públicas anon
+DROP POLICY IF EXISTS "anon_all_ladders"             ON ladders;
+DROP POLICY IF EXISTS "anon_all_ladder_teams"        ON ladder_teams;
+DROP POLICY IF EXISTS "anon_all_ladder_participants" ON ladder_participants;
+DROP POLICY IF EXISTS "anon_all_ladder_invites"      ON ladder_invites;
+DROP POLICY IF EXISTS "anon_all_summoner_games"      ON summoner_games;
+
+CREATE POLICY "anon_all_ladders"             ON ladders             FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all_ladder_teams"        ON ladder_teams        FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all_ladder_participants" ON ladder_participants FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all_ladder_invites"      ON ladder_invites      FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "anon_all_summoner_games"      ON summoner_games      FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- ============================================================
 -- Listo. La app crea filas al primer guardado.
 -- ============================================================
+
 

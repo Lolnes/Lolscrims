@@ -851,3 +851,473 @@ export async function respondScrimRequest(requestId, accepted) {
   if (error) throw new Error('Error al responder: ' + error.message);
 }
 
+// ═══════════════════════════════════════════════════════════
+// FASE 3: LADDERS & TRACKER (SoloQ / Flex)
+// ═══════════════════════════════════════════════════════════
+
+export const TIERS = ['UNRANKED', 'IRON', 'BRONZE', 'SILVER', 'GOLD', 'PLATINUM', 'EMERALD', 'DIAMOND', 'MASTER', 'GRANDMASTER', 'CHALLENGER'];
+export const DIVISIONS = ['IV', 'III', 'II', 'I'];
+
+export const TIER_BASES = {
+  UNRANKED: 0,
+  IRON: 100,
+  BRONZE: 500,
+  SILVER: 900,
+  GOLD: 1300,
+  PLATINUM: 1700,
+  EMERALD: 2100,
+  DIAMOND: 2500,
+  MASTER: 2900,
+  GRANDMASTER: 3400,
+  CHALLENGER: 3900,
+};
+
+export function rankToLp(tier, division, lp) {
+  const t = (tier || 'UNRANKED').toUpperCase();
+  if (t === 'UNRANKED') return 0;
+  const base = TIER_BASES[t] ?? 0;
+  if (t === 'MASTER' || t === 'GRANDMASTER' || t === 'CHALLENGER') {
+    return base + (Number(lp) || 0);
+  }
+  const divIndex = DIVISIONS.indexOf(division || 'IV');
+  const divLp = (divIndex >= 0 ? divIndex : 0) * 100;
+  return base + divLp + (Number(lp) || 0);
+}
+
+export function lpToRank(lpValue) {
+  if (lpValue <= 0) return { tier: 'UNRANKED', division: '', lp: 0, str: 'Unranked' };
+  
+  if (lpValue >= 3900) {
+    return { tier: 'CHALLENGER', division: '', lp: lpValue - 3900, str: `Challenger ${lpValue - 3900} LP` };
+  }
+  if (lpValue >= 3400) {
+    return { tier: 'GRANDMASTER', division: '', lp: lpValue - 3400, str: `Grandmaster ${lpValue - 3400} LP` };
+  }
+  if (lpValue >= 2900) {
+    return { tier: 'MASTER', division: '', lp: lpValue - 2900, str: `Master ${lpValue - 2900} LP` };
+  }
+  
+  const sortedTiers = ['DIAMOND', 'EMERALD', 'PLATINUM', 'GOLD', 'SILVER', 'BRONZE', 'IRON'];
+  for (const tier of sortedTiers) {
+    const base = TIER_BASES[tier];
+    if (lpValue >= base) {
+      const diff = lpValue - base;
+      const divIndex = Math.min(3, Math.floor(diff / 100));
+      const division = DIVISIONS[divIndex];
+      const lp = diff % 100;
+      
+      const tierName = tier.charAt(0) + tier.slice(1).toLowerCase();
+      return { tier, division, lp, str: `${tierName} ${division} - ${lp} LP` };
+    }
+  }
+  
+  return { tier: 'UNRANKED', division: '', lp: 0, str: 'Unranked' };
+}
+
+export async function getUserProfile(userId) {
+  if (!isSupabaseConfigured || !userId) return null;
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, summoner_name, games_privacy, current_tier, current_division, current_lp, current_lp_value')
+    .eq('id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+export async function updateUserProfile(userId, summonerName, privacy, tier, division, lp) {
+  if (!isSupabaseConfigured) return;
+  const lpValue = rankToLp(tier, division, lp);
+  const { error } = await supabase
+    .from('users')
+    .update({
+      summoner_name: summonerName.trim(),
+      games_privacy: privacy,
+      current_tier: tier,
+      current_division: division,
+      current_lp: Number(lp) || 0,
+      current_lp_value: lpValue
+    })
+    .eq('id', userId);
+  if (error) throw new Error('Error al actualizar perfil: ' + error.message);
+  
+  // Actualizar también en los ladders activos en que participa
+  const { data: activeLadders } = await supabase
+    .from('ladders')
+    .select('id')
+    .eq('status', 'active');
+  if (activeLadders && activeLadders.length > 0) {
+    const activeIds = activeLadders.map(l => l.id);
+    await supabase
+      .from('ladder_participants')
+      .update({ current_lp: lpValue, last_updated: new Date() })
+      .eq('user_id', userId)
+      .in('ladder_id', activeIds);
+  }
+}
+
+export async function createLadder(teamId, name, type, period, endDate, createdBy) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no configurado');
+  const ladderId = `lad_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  
+  const { error: ladderErr } = await supabase.from('ladders').insert([{
+    id: ladderId,
+    team_id: teamId,
+    name: name.trim(),
+    type,
+    period,
+    end_date: endDate,
+    status: 'active',
+    created_by: createdBy
+  }]);
+  if (ladderErr) throw new Error('Error al crear ladder: ' + ladderErr.message);
+
+  // Inscribir al propio equipo creador
+  await supabase.from('ladder_teams').insert([{
+    id: `lt_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+    ladder_id: ladderId,
+    team_id: teamId
+  }]);
+
+  // Agregar a todos los miembros actuales de ese equipo a ladder_participants
+  const { data: members } = await supabase
+    .from('team_members')
+    .select('user_id, users(current_lp_value)')
+    .eq('team_id', teamId);
+  
+  if (members && members.length > 0) {
+    const participants = members.map(m => ({
+      id: `lp_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      ladder_id: ladderId,
+      user_id: m.user_id,
+      team_id: teamId,
+      start_lp: m.users?.current_lp_value || 0,
+      current_lp: m.users?.current_lp_value || 0
+    }));
+    await supabase.from('ladder_participants').insert(participants);
+  }
+
+  return ladderId;
+}
+
+export async function loadTeamLadders(teamId) {
+  if (!isSupabaseConfigured || !teamId) return [];
+  
+  // Buscar ladders en que participa el equipo
+  const { data: lTeams } = await supabase
+    .from('ladder_teams')
+    .select('ladder_id')
+    .eq('team_id', teamId);
+  
+  if (!lTeams || lTeams.length === 0) return [];
+  const ladderIds = lTeams.map(lt => lt.ladder_id);
+
+  const { data: ladders, error } = await supabase
+    .from('ladders')
+    .select('*, teams!ladders_team_id_fkey(name)')
+    .in('id', ladderIds)
+    .order('created_at', { ascending: false });
+  
+  if (error) throw error;
+  return ladders.map(l => ({
+    id: l.id,
+    teamId: l.team_id,
+    ownerTeamName: l.teams?.name || '',
+    name: l.name,
+    type: l.type,
+    period: l.period,
+    startDate: l.start_date,
+    endDate: l.end_date,
+    status: l.status,
+    createdAt: l.created_at
+  }));
+}
+
+export async function loadLadderDetails(ladderId) {
+  if (!isSupabaseConfigured || !ladderId) return null;
+
+  const [
+    { data: ladder },
+    { data: teams },
+    { data: participants }
+  ] = await Promise.all([
+    supabase.from('ladders').select('*').eq('id', ladderId).maybeSingle(),
+    supabase.from('ladder_teams').select('team_id, teams(name)').eq('ladder_id', ladderId),
+    supabase.from('ladder_participants').select('*, users(name, summoner_name, games_privacy, current_tier, current_division, current_lp), teams(name)').eq('ladder_id', ladderId)
+  ]);
+
+  if (!ladder) return null;
+
+  return {
+    id: ladder.id,
+    teamId: ladder.team_id,
+    name: ladder.name,
+    type: ladder.type,
+    period: ladder.period,
+    startDate: ladder.start_date,
+    endDate: ladder.end_date,
+    status: ladder.status,
+    teams: (teams || []).map(t => ({ id: t.team_id, name: t.teams?.name || '' })),
+    participants: (participants || []).map(p => ({
+      userId: p.user_id,
+      userName: p.users?.name || '?',
+      summonerName: p.users?.summoner_name || '',
+      gamesPrivacy: p.users?.games_privacy || 'public',
+      teamId: p.team_id,
+      teamName: p.teams?.name || '?',
+      startLp: p.start_lp,
+      currentLp: p.current_lp,
+      delta: p.current_lp - p.start_lp,
+      lastUpdated: p.last_updated,
+      currentTier: p.users?.current_tier || 'UNRANKED',
+      currentDivision: p.users?.current_division || 'IV',
+      currentLpNum: p.users?.current_lp || 0
+    })).sort((a, b) => b.delta - a.delta)
+  };
+}
+
+export async function ensureUserInLadder(ladderId, userId, teamId) {
+  if (!isSupabaseConfigured || !ladderId || !userId || !teamId) return;
+  const { data: existing } = await supabase
+    .from('ladder_participants')
+    .select('id')
+    .eq('ladder_id', ladderId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  
+  if (!existing) {
+    const { data: u } = await supabase
+      .from('users')
+      .select('current_lp_value')
+      .eq('id', userId)
+      .maybeSingle();
+    
+    const lpVal = u?.current_lp_value || 0;
+    await supabase.from('ladder_participants').insert([{
+      id: `lp_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      ladder_id: ladderId,
+      user_id: userId,
+      team_id: teamId,
+      start_lp: lpVal,
+      current_lp: lpVal
+    }]);
+  }
+}
+
+export async function sendLadderInvite(ladderId, fromTeamId, toTeamId) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no configurado');
+  const id = `li_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const { error } = await supabase.from('ladder_invites').insert([{
+    id,
+    ladder_id: ladderId,
+    from_team_id: fromTeamId,
+    to_team_id: toTeamId,
+    status: 'pending'
+  }]);
+  if (error) {
+    if (error.code === '23505') throw new Error('Este equipo ya está invitado o ya forma parte del ladder');
+    throw new Error('Error al enviar invitación: ' + error.message);
+  }
+}
+
+export async function loadIncomingLadderInvites(teamId) {
+  if (!isSupabaseConfigured || !teamId) return [];
+  const { data, error } = await supabase
+    .from('ladder_invites')
+    .select('*, ladders(name), teams!ladder_invites_from_team_id_fkey(name)')
+    .eq('to_team_id', teamId)
+    .eq('status', 'pending');
+  if (error) throw error;
+  return data.map(i => ({
+    id: i.id,
+    ladderId: i.ladder_id,
+    ladderName: i.ladders?.name || '?',
+    fromTeamId: i.from_team_id,
+    fromTeamName: i.teams?.name || '?',
+    createdAt: i.created_at
+  }));
+}
+
+export async function respondLadderInvite(inviteId, accepted) {
+  if (!isSupabaseConfigured) throw new Error('Supabase no configurado');
+  const status = accepted ? 'accepted' : 'rejected';
+  
+  const { data: invite } = await supabase
+    .from('ladder_invites')
+    .select('*')
+    .eq('id', inviteId)
+    .maybeSingle();
+  if (!invite) throw new Error('Invitación no encontrada');
+
+  const { error: updateErr } = await supabase
+    .from('ladder_invites')
+    .update({ status })
+    .eq('id', inviteId);
+  if (updateErr) throw new Error('Error al responder invitación: ' + updateErr.message);
+
+  if (accepted) {
+    // Agregar a la tabla de equipos del ladder
+    await supabase.from('ladder_teams').insert([{
+      id: `lt_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+      ladder_id: invite.ladder_id,
+      team_id: invite.to_team_id
+    }]);
+
+    // Inscribir a todos los jugadores del equipo invitado
+    const { data: members } = await supabase
+      .from('team_members')
+      .select('user_id, users(current_lp_value)')
+      .eq('team_id', invite.to_team_id);
+    
+    if (members && members.length > 0) {
+      const participants = members.map(m => ({
+        id: `lp_${Date.now()}_${Math.random().toString(36).slice(2,6)}`,
+        ladder_id: invite.ladder_id,
+        user_id: m.user_id,
+        team_id: invite.to_team_id,
+        start_lp: m.users?.current_lp_value || 0,
+        current_lp: m.users?.current_lp_value || 0
+      }));
+      await supabase.from('ladder_participants').insert(participants);
+    }
+  }
+}
+
+export async function loadUserGames(userId) {
+  if (!isSupabaseConfigured || !userId) return [];
+  const { data, error } = await supabase
+    .from('summoner_games')
+    .select('*')
+    .eq('user_id', userId)
+    .order('played_at', { ascending: false })
+    .limit(20);
+  if (error) throw error;
+  return data.map(g => ({
+    id: g.id,
+    champion: g.champion,
+    role: g.role,
+    result: g.result,
+    kills: g.kda_kills,
+    deaths: g.kda_deaths,
+    assists: g.kda_assists,
+    lpChange: g.lp_change,
+    playedAt: g.played_at,
+    playersMatched: g.players_matched || []
+  }));
+}
+
+export async function syncUserGames(userId, teamId, summonerName) {
+  if (!isSupabaseConfigured || !userId) return;
+
+  const { data: user } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', userId)
+    .maybeSingle();
+  if (!user) throw new Error('Usuario no encontrado');
+
+  // Buscar otros usuarios con summoner name para simular enfrentamientos directos
+  const { data: allUsers } = await supabase
+    .from('users')
+    .select('id, name, summoner_name')
+    .neq('id', userId)
+    .neq('summoner_name', '')
+    .not('summoner_name', 'is', null);
+
+  const numGames = Math.floor(Math.random() * 3) + 3; // Simular entre 3 y 5 partidas
+  const newGames = [];
+  let lpAccumulator = user.current_lp_value || 1200; // Por defecto Plata IV (1200 LP) si era unranked
+
+  const CHAMPIONS_LIST = ['Aatrox', 'Ahri', 'Akali', 'Alistar', 'Amumu', 'Ashe', 'Bard', 'Camille', 'Darius', 'Ezreal', 'Galio', 'Garen', 'Janna', 'Jax', 'KaiSa', 'Karma', 'LeeSin', 'Leona', 'Lulu', 'Lux', 'Malphite', 'MissFortune', 'Nautilus', 'Nidalee', 'Nocturne', 'Orianna', 'Ornn', 'Ryze', 'Sejuani', 'Sivir', 'Syndra', 'Thresh', 'Vayne', 'Yasuo', 'Yone', 'Zoe'];
+  const ROLES_LIST = ['top', 'jg', 'mid', 'adc', 'sup'];
+
+  for (let i = 0; i < numGames; i++) {
+    const result = Math.random() > 0.45 ? 'win' : 'loss';
+    const lpChange = result === 'win' ? (Math.floor(Math.random() * 11) + 15) : -(Math.floor(Math.random() * 9) + 12);
+    lpAccumulator += lpChange;
+    if (lpAccumulator < 0) lpAccumulator = 0;
+
+    const champ = CHAMPIONS_LIST[Math.floor(Math.random() * CHAMPIONS_LIST.length)];
+    const role = ROLES_LIST[Math.floor(Math.random() * ROLES_LIST.length)];
+    
+    // KDA
+    let kills = 0, deaths = 0, assists = 0;
+    if (result === 'win') {
+      kills = Math.floor(Math.random() * 8) + (role === 'sup' ? 0 : 3);
+      deaths = Math.floor(Math.random() * 5);
+      assists = Math.floor(Math.random() * 12) + 5;
+    } else {
+      kills = Math.floor(Math.random() * 5) + (role === 'sup' ? 0 : 1);
+      deaths = Math.floor(Math.random() * 7) + 3;
+      assists = Math.floor(Math.random() * 8);
+    }
+
+    // Cruces Head-to-Head (40% de probabilidad si hay otros invocadores registrados)
+    const matched = [];
+    if (allUsers && allUsers.length > 0 && Math.random() < 0.4) {
+      const numMatched = Math.min(allUsers.length, Math.random() < 0.8 ? 1 : 2);
+      const shuffled = [...allUsers].sort(() => 0.5 - Math.random());
+      
+      for (let j = 0; j < numMatched; j++) {
+        const matchedUser = shuffled[j];
+        const sameTeam = Math.random() > 0.5;
+        const matchedResult = sameTeam ? result : (result === 'win' ? 'loss' : 'win');
+        matched.push({
+          userId: matchedUser.id,
+          summonerName: matchedUser.summoner_name,
+          champion: CHAMPIONS_LIST[Math.floor(Math.random() * CHAMPIONS_LIST.length)],
+          sameTeam,
+          result: matchedResult
+        });
+      }
+    }
+
+    newGames.push({
+      id: `g_${Date.now()}_${i}_${Math.random().toString(36).slice(2, 6)}`,
+      user_id: userId,
+      champion: champ,
+      role,
+      result,
+      kda_kills: kills,
+      kda_deaths: deaths,
+      kda_assists: assists,
+      lp_change: lpChange,
+      played_at: new Date(Date.now() - (i * 2.5 * 60 * 60 * 1000) - (Math.random() * 30 * 60 * 1000)),
+      players_matched: matched
+    });
+  }
+
+  // Insertar en la base de datos
+  const { error: gamesErr } = await supabase.from('summoner_games').insert(newGames);
+  if (gamesErr) throw new Error('Error al guardar partidas: ' + gamesErr.message);
+
+  // Actualizar rango y LP acumulados en la cuenta
+  const newRank = lpToRank(lpAccumulator);
+  const { error: profileErr } = await supabase
+    .from('users')
+    .update({
+      current_tier: newRank.tier,
+      current_division: newRank.division,
+      current_lp: newRank.lp,
+      current_lp_value: lpAccumulator
+    })
+    .eq('id', userId);
+  if (profileErr) throw new Error('Error al actualizar rango de invocador: ' + profileErr.message);
+
+  // Sincronizar en los ladders activos de este usuario
+  const { data: activeLadders } = await supabase
+    .from('ladders')
+    .select('id')
+    .eq('status', 'active');
+  
+  if (activeLadders && activeLadders.length > 0) {
+    const activeIds = activeLadders.map(l => l.id);
+    await supabase
+      .from('ladder_participants')
+      .update({ current_lp: lpAccumulator, last_updated: new Date() })
+      .eq('user_id', userId)
+      .in('ladder_id', activeIds);
+  }
+}
+
+

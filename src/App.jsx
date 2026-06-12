@@ -1024,8 +1024,8 @@ function CompsTab({ comps, setComps, drafts, setDrafts, players, champions, sess
     const newDraft = {
       id: `draft_${uid()}`,
       name: 'Nuevo Draft de Scrim',
-      bluePicks: { top: '', jg: '', mid: '', adc: '', sup: '' },
-      redPicks: { top: '', jg: '', mid: '', adc: '', sup: '' },
+      bluePicks: { top: '', jg: '', mid: '', adc: '', sup: '', seq: ['', '', '', '', ''], currentTurn: 0, isCompleted: false },
+      redPicks: { top: '', jg: '', mid: '', adc: '', sup: '', seq: ['', '', '', '', ''], currentTurn: 0, isCompleted: false },
       blueBans: ['', '', '', '', ''],
       redBans: ['', '', '', '', ''],
       notes: '',
@@ -1355,11 +1355,21 @@ function CompEditor({ comp, champions, players, onUpdate, onDone, onDelete }) {
 
 /* ─── Draft Card ─── */
 function DraftCard({ draft, champions, onEdit, onDelete, isSpectator }) {
+  const isCompleted = draft.bluePicks?.isCompleted;
+  const currentTurn = draft.bluePicks?.currentTurn ?? 0;
+  
   return (
     <div className="comp-card" style={{ borderColor: 'var(--border-gold)', background: 'var(--bg-secondary)', padding: '1rem', borderTop: '4px solid var(--gold-primary)' }}>
       <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
         <div>
-          <span className="font-semibold text-gold text-base" style={{ fontFamily: 'var(--font-display)' }}>{draft.name || 'Draft sin nombre'}</span>
+          <span className="font-semibold text-gold text-base" style={{ fontFamily: 'var(--font-display)' }}>
+            {draft.name || 'Draft sin nombre'}
+          </span>
+          {isCompleted ? (
+            <span className="chip chip--sm chip--outline ml-2" style={{ fontSize: '0.65rem', border: '1px solid var(--gold-primary)', color: 'var(--gold-bright)' }}>Completado</span>
+          ) : (
+            <span className="chip chip--sm chip--gold ml-2" style={{ fontSize: '0.65rem', background: 'var(--gold-glow)', color: 'var(--gold-bright)' }}>En progreso ({currentTurn}/20)</span>
+          )}
           <span className="text-xs text-muted block">{new Date(draft.createdAt).toLocaleDateString()} · {new Date(draft.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
         </div>
         {!isSpectator && (
@@ -1374,20 +1384,42 @@ function DraftCard({ draft, champions, onEdit, onDelete, isSpectator }) {
       <div className="flex items-center justify-between gap-4 py-3 border-t border-b border-light" style={{ background: 'var(--bg-primary)', padding: '0.75rem', borderRadius: 'var(--radius-lg)' }}>
         {/* Blue picks */}
         <div className="flex gap-1.5">
-          {ROLES.map((r) => (
-            <div key={r.id} title={`Azul ${r.name}`}>
-              <ChampionIcon champId={draft.bluePicks?.[r.id]} champions={champions} size="lg" borderColor="var(--blue)" />
-            </div>
-          ))}
+          {isCompleted ? (
+            ROLES.map((r) => (
+              <div key={r.id} title={`Azul ${r.name}`}>
+                <ChampionIcon champId={draft.bluePicks?.[r.id]} champions={champions} size="lg" borderColor="var(--blue)" />
+              </div>
+            ))
+          ) : (
+            Array.from({ length: 5 }).map((_, idx) => {
+              const p = draft.bluePicks?.seq?.[idx];
+              return (
+                <div key={idx} title={`Azul Pick ${idx + 1}`}>
+                  <ChampionIcon champId={p} champions={champions} size="lg" borderColor="var(--blue)" />
+                </div>
+              );
+            })
+          )}
         </div>
         <div className="text-xs font-mono text-gold font-bold" style={{ letterSpacing: '0.1em' }}>VS</div>
         {/* Red picks */}
         <div className="flex gap-1.5">
-          {ROLES.map((r) => (
-            <div key={r.id} title={`Rojo ${r.name}`}>
-              <ChampionIcon champId={draft.redPicks?.[r.id]} champions={champions} size="lg" borderColor="var(--red)" />
-            </div>
-          ))}
+          {isCompleted ? (
+            ROLES.map((r) => (
+              <div key={r.id} title={`Rojo ${r.name}`}>
+                <ChampionIcon champId={draft.redPicks?.[r.id]} champions={champions} size="lg" borderColor="var(--red)" />
+              </div>
+            ))
+          ) : (
+            Array.from({ length: 5 }).map((_, idx) => {
+              const p = draft.redPicks?.seq?.[idx];
+              return (
+                <div key={idx} title={`Rojo Pick ${idx + 1}`}>
+                  <ChampionIcon champId={p} champions={champions} size="lg" borderColor="var(--red)" />
+                </div>
+              );
+            })
+          )}
         </div>
       </div>
 
@@ -1421,59 +1453,382 @@ function DraftCard({ draft, champions, onEdit, onDelete, isSpectator }) {
 }
 
 /* ─── Draft Editor ─── */
+const DRAFT_TURNS = [
+  { turn: 0,  type: 'ban',  team: 'azul', index: 0, label: 'Ban 1 Azul' },
+  { turn: 1,  type: 'ban',  team: 'rojo', index: 0, label: 'Ban 1 Rojo' },
+  { turn: 2,  type: 'ban',  team: 'azul', index: 1, label: 'Ban 2 Azul' },
+  { turn: 3,  type: 'ban',  team: 'rojo', index: 1, label: 'Ban 2 Rojo' },
+  { turn: 4,  type: 'ban',  team: 'azul', index: 2, label: 'Ban 3 Azul' },
+  { turn: 5,  type: 'ban',  team: 'rojo', index: 2, label: 'Ban 3 Rojo' },
+
+  { turn: 6,  type: 'pick', team: 'azul', index: 0, label: 'Pick 1 Azul' },
+  { turn: 7,  type: 'pick', team: 'rojo', index: 0, label: 'Pick 1 Rojo' },
+  { turn: 8,  type: 'pick', team: 'rojo', index: 1, label: 'Pick 2 Rojo' },
+  { turn: 9,  type: 'pick', team: 'azul', index: 1, label: 'Pick 2 Azul' },
+  { turn: 10, type: 'pick', team: 'azul', index: 2, label: 'Pick 3 Azul' },
+  { turn: 11, type: 'pick', team: 'rojo', index: 2, label: 'Pick 3 Rojo' },
+
+  { turn: 12, type: 'ban',  team: 'rojo', index: 3, label: 'Ban 4 Rojo' },
+  { turn: 13, type: 'ban',  team: 'azul', index: 3, label: 'Ban 4 Azul' },
+  { turn: 14, type: 'ban',  team: 'rojo', index: 4, label: 'Ban 5 Rojo' },
+  { turn: 15, type: 'ban',  team: 'azul', index: 4, label: 'Ban 5 Azul' },
+
+  { turn: 16, type: 'pick', team: 'rojo', index: 3, label: 'Pick 4 Rojo' },
+  { turn: 17, type: 'pick', team: 'azul', index: 3, label: 'Pick 4 Azul' },
+  { turn: 18, type: 'pick', team: 'azul', index: 4, label: 'Pick 5 Azul' },
+  { turn: 19, type: 'pick', team: 'rojo', index: 4, label: 'Pick 5 Rojo' },
+];
+
+const getTurnIndexForSlot = (type, team, index) => {
+  if (type === 'ban') {
+    if (team === 'azul') {
+      if (index === 0) return 0;
+      if (index === 1) return 2;
+      if (index === 2) return 4;
+      if (index === 3) return 13;
+      if (index === 4) return 15;
+    } else {
+      if (index === 0) return 1;
+      if (index === 1) return 3;
+      if (index === 2) return 5;
+      if (index === 3) return 12;
+      if (index === 4) return 14;
+    }
+  } else { // pick
+    if (team === 'azul') {
+      if (index === 0) return 6;
+      if (index === 1) return 9;
+      if (index === 2) return 10;
+      if (index === 3) return 17;
+      if (index === 4) return 18;
+    } else {
+      if (index === 0) return 7;
+      if (index === 1) return 8;
+      if (index === 2) return 11;
+      if (index === 3) return 16;
+      if (index === 4) return 19;
+    }
+  }
+  return 0;
+};
+
+const ROLE_FILTERS = [
+  { id: 'todos', name: 'Todos', icon: '🌐' },
+  { id: 'top', name: 'Top', icon: '🛡️' },
+  { id: 'jg', name: 'Jg', icon: '🌿' },
+  { id: 'mid', name: 'Mid', icon: '⚡' },
+  { id: 'adc', name: 'ADC', icon: '🏹' },
+  { id: 'sup', name: 'Sup', icon: '💚' },
+];
+
 function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) {
-  // activeSlot defines which pick/ban we are currently selecting for.
-  // format: { type: 'pick' | 'ban', team: 'azul' | 'rojo', id: string (role) | number (index) }
-  const [activeSlot, setActiveSlot] = useState({ type: 'pick', team: 'azul', id: 'top' });
+  const bluePicks = draft.bluePicks || {};
+  const redPicks = draft.redPicks || {};
+  const blueBans = draft.blueBans || ['', '', '', '', ''];
+  const redBans = draft.redBans || ['', '', '', '', ''];
+
+  const initialBlueSeq = bluePicks.seq || ['', '', '', '', ''];
+  const initialRedSeq = redPicks.seq || ['', '', '', '', ''];
+
+  const hasExistingPicks = Object.keys(bluePicks).some(
+    (v) => typeof v === 'string' && v !== '' && v !== 'seq' && v !== 'currentTurn' && v !== 'isCompleted' && bluePicks[v]
+  );
+
+  const initialTurn = bluePicks.currentTurn !== undefined
+    ? bluePicks.currentTurn
+    : (hasExistingPicks ? 20 : 0);
+
+  const isCompleted = bluePicks.isCompleted !== undefined
+    ? bluePicks.isCompleted
+    : (hasExistingPicks ? true : false);
+
+  const [currentTurnIndex, setCurrentTurnIndex] = useState(initialTurn);
+  const [preSelectedChamp, setPreSelectedChamp] = useState(null);
+  
+  // Timer States
+  const [timer, setTimer] = useState(30);
+  const [timerActive, setTimerActive] = useState(false);
+  const [isTimerRunning, setIsTimerRunning] = useState(false);
+  const [autoAdvance, setAutoAdvance] = useState(true);
+
+  // Filter States
+  const [roleFilter, setRoleFilter] = useState('todos');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const setSlot = (champId) => {
-    if (activeSlot.type === 'pick') {
-      const picksKey = activeSlot.team === 'azul' ? 'bluePicks' : 'redPicks';
-      onUpdate({
-        [picksKey]: { ...draft[picksKey], [activeSlot.id]: champId }
+  // Draft Flow States
+  const [bluePicksSeq, setBluePicksSeq] = useState(initialBlueSeq);
+  const [redPicksSeq, setRedPicksSeq] = useState(initialRedSeq);
+  const [isCompletedState, setIsCompletedState] = useState(isCompleted);
+
+  // Role Assignment States (Turn 20)
+  const [blueRolePicks, setBlueRolePicks] = useState({
+    top: bluePicks.top || '',
+    jg: bluePicks.jg || '',
+    mid: bluePicks.mid || '',
+    adc: bluePicks.adc || '',
+    sup: bluePicks.sup || '',
+  });
+
+  const [redRolePicks, setRedRolePicks] = useState({
+    top: redPicks.top || '',
+    jg: redPicks.jg || '',
+    mid: redPicks.mid || '',
+    adc: redPicks.adc || '',
+    sup: redPicks.sup || '',
+  });
+
+  // Sound generator helper using Web Audio API
+  const playBeep = useCallback((freq = 440, duration = 0.2) => {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (!AudioCtx) return;
+      const audioCtx = new AudioCtx();
+      const oscillator = audioCtx.createOscillator();
+      const gainNode = audioCtx.createGain();
+
+      oscillator.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      oscillator.frequency.value = freq;
+      oscillator.type = 'sine';
+
+      gainNode.gain.setValueAtTime(0.04, audioCtx.currentTime); // low volume
+      oscillator.start();
+      oscillator.stop(audioCtx.currentTime + duration);
+    } catch (e) {
+      console.error('AudioContext error:', e);
+    }
+  }, []);
+
+  // Sync state values when currentTurnIndex changes
+  useEffect(() => {
+    setTimer(30);
+    setPreSelectedChamp(null);
+    if (timerActive && currentTurnIndex < 20 && !isCompletedState) {
+      setIsTimerRunning(true);
+    } else {
+      setIsTimerRunning(false);
+    }
+  }, [currentTurnIndex, timerActive, isCompletedState]);
+
+  // Timer Tick Effect
+  useEffect(() => {
+    if (!timerActive || !isTimerRunning || currentTurnIndex >= 20 || isCompletedState) return;
+
+    const interval = setInterval(() => {
+      setTimer((t) => {
+        if (t <= 1) {
+          clearInterval(interval);
+          playBeep(220, 0.45); // low buzzer sound
+          if (autoAdvance) {
+            // Auto lock-in empty
+            lockInChamp('');
+          } else {
+            setIsTimerRunning(false);
+          }
+          return 30;
+        }
+        // Beep tick warning in last 5 seconds
+        if (t <= 6) {
+          playBeep(580, 0.08);
+        }
+        return t - 1;
       });
-      // Move to next pick slot automatically
-      const nextRoleIdx = ROLES.findIndex(r => r.id === activeSlot.id);
-      if (nextRoleIdx < 4) {
-        setActiveSlot({ type: 'pick', team: activeSlot.team, id: ROLES[nextRoleIdx + 1].id });
-      } else if (activeSlot.team === 'azul') {
-        setActiveSlot({ type: 'pick', team: 'rojo', id: 'top' });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [timerActive, isTimerRunning, currentTurnIndex, autoAdvance, playBeep, bluePicksSeq, redPicksSeq]);
+
+  const updateDraftDatabase = (newTurn, newBlueSeq, newRedSeq, newBlueBans, newRedBans, isCompletedVal, roleBluePicks, roleRedPicks) => {
+    onUpdate({
+      blueBans: newBlueBans || draft.blueBans,
+      redBans: newRedBans || draft.redBans,
+      bluePicks: {
+        ...(roleBluePicks || draft.bluePicks),
+        seq: newBlueSeq || bluePicksSeq,
+        currentTurn: newTurn,
+        isCompleted: isCompletedVal
+      },
+      redPicks: {
+        ...(roleRedPicks || draft.redPicks),
+        seq: newRedSeq || redPicksSeq,
+        currentTurn: newTurn,
+        isCompleted: isCompletedVal
       }
-    } else {
-      const bansKey = activeSlot.team === 'azul' ? 'blueBans' : 'redBans';
-      const newBans = [...(draft[bansKey] || ['', '', '', '', ''])];
-      newBans[activeSlot.id] = champId;
-      onUpdate({ [bansKey]: newBans });
-      // Move to next ban slot automatically
-      if (activeSlot.id < 4) {
-        setActiveSlot({ type: 'ban', team: activeSlot.team, id: activeSlot.id + 1 });
-      } else if (activeSlot.team === 'azul') {
-        setActiveSlot({ type: 'ban', team: 'rojo', id: 0 });
+    });
+  };
+
+  const lockInChamp = (champId) => {
+    if (currentTurnIndex >= 20) return;
+    const cid = champId !== undefined ? champId : preSelectedChamp;
+    const turnInfo = DRAFT_TURNS[currentTurnIndex];
+
+    let nextBlueSeq = [...bluePicksSeq];
+    let nextRedSeq = [...redPicksSeq];
+    let nextBlueBans = [...blueBans];
+    let nextRedBans = [...redBans];
+
+    if (turnInfo.type === 'ban') {
+      if (turnInfo.team === 'azul') {
+        nextBlueBans[turnInfo.index] = cid || '';
       } else {
-        setActiveSlot({ type: 'pick', team: 'azul', id: 'top' });
+        nextRedBans[turnInfo.index] = cid || '';
+      }
+    } else {
+      if (turnInfo.team === 'azul') {
+        nextBlueSeq[turnInfo.index] = cid || '';
+      } else {
+        nextRedSeq[turnInfo.index] = cid || '';
       }
     }
+
+    const nextTurn = currentTurnIndex + 1;
+    setBluePicksSeq(nextBlueSeq);
+    setRedPicksSeq(nextRedSeq);
+    setCurrentTurnIndex(nextTurn);
+    setPreSelectedChamp(null);
+
+    // If turn 20 is reached, prepare defaults for roles
+    let roleB = { ...blueRolePicks };
+    let roleR = { ...redRolePicks };
+    if (nextTurn === 20) {
+      roleB = {
+        top: nextBlueSeq[0] || '',
+        jg: nextBlueSeq[1] || '',
+        mid: nextBlueSeq[2] || '',
+        adc: nextBlueSeq[3] || '',
+        sup: nextBlueSeq[4] || '',
+      };
+      roleR = {
+        top: nextRedSeq[0] || '',
+        jg: nextRedSeq[1] || '',
+        mid: nextRedSeq[2] || '',
+        adc: nextRedSeq[3] || '',
+        sup: nextRedSeq[4] || '',
+      };
+      setBlueRolePicks(roleB);
+      setRedRolePicks(roleR);
+    }
+
+    updateDraftDatabase(
+      nextTurn,
+      nextBlueSeq,
+      nextRedSeq,
+      nextBlueBans,
+      nextRedBans,
+      false,
+      nextTurn === 20 ? roleB : null,
+      nextTurn === 20 ? roleR : null
+    );
+    
+    // Play pick locked in sound
+    playBeep(440, 0.12);
   };
 
-  const getSlotChamp = (type, team, id) => {
-    if (type === 'pick') {
-      return team === 'azul' ? draft.bluePicks?.[id] : draft.redPicks?.[id];
+  const handleUndo = () => {
+    if (currentTurnIndex === 0) return;
+    const prevTurn = currentTurnIndex - 1;
+    const turnInfo = DRAFT_TURNS[prevTurn];
+
+    let nextBlueSeq = [...bluePicksSeq];
+    let nextRedSeq = [...redPicksSeq];
+    let nextBlueBans = [...blueBans];
+    let nextRedBans = [...redBans];
+
+    if (turnInfo.type === 'ban') {
+      if (turnInfo.team === 'azul') nextBlueBans[turnInfo.index] = '';
+      else nextRedBans[turnInfo.index] = '';
     } else {
-      return (team === 'azul' ? draft.blueBans : draft.redBans)?.[id];
+      if (turnInfo.team === 'azul') nextBlueSeq[turnInfo.index] = '';
+      else nextRedSeq[turnInfo.index] = '';
+    }
+
+    setBluePicksSeq(nextBlueSeq);
+    setRedPicksSeq(nextRedSeq);
+    setCurrentTurnIndex(prevTurn);
+    setPreSelectedChamp(null);
+    setIsCompletedState(false);
+
+    updateDraftDatabase(prevTurn, nextBlueSeq, nextRedSeq, nextBlueBans, nextRedBans, false);
+    playBeep(330, 0.15);
+  };
+
+  const handleReset = () => {
+    if (!window.confirm('¿Seguro que deseas reiniciar este draft por completo?')) return;
+    
+    const resetSeq = ['', '', '', '', ''];
+    const resetBans = ['', '', '', '', ''];
+    
+    setBluePicksSeq(resetSeq);
+    setRedPicksSeq(resetSeq);
+    setCurrentTurnIndex(0);
+    setPreSelectedChamp(null);
+    setIsCompletedState(false);
+    
+    const initialRoles = { top: '', jg: '', mid: '', adc: '', sup: '' };
+    setBlueRolePicks(initialRoles);
+    setRedRolePicks(initialRoles);
+
+    updateDraftDatabase(0, resetSeq, resetSeq, resetBans, resetBans, false, initialRoles, initialRoles);
+    playBeep(220, 0.2);
+  };
+
+  const handleSlotClick = (type, team, index) => {
+    const turnIdx = getTurnIndexForSlot(type, team, index);
+    setCurrentTurnIndex(turnIdx);
+    setIsCompletedState(false);
+  };
+
+  const handleRoleChange = (team, roleId, selectedChampId) => {
+    const isBlue = team === 'azul';
+    const currentRoles = isBlue ? { ...blueRolePicks } : { ...redRolePicks };
+
+    // Smart swapping
+    const conflictingRole = Object.keys(currentRoles).find(
+      (key) => key !== 'seq' && key !== 'currentTurn' && key !== 'isCompleted' && currentRoles[key] === selectedChampId
+    );
+
+    const previousChamp = currentRoles[roleId];
+
+    if (conflictingRole) {
+      currentRoles[conflictingRole] = previousChamp;
+    }
+    currentRoles[roleId] = selectedChampId;
+
+    if (isBlue) {
+      setBlueRolePicks(currentRoles);
+    } else {
+      setRedRolePicks(currentRoles);
     }
   };
 
-  const getPlayerForRole = (team, roleId) => {
-    return players.find((p) => p.team === team && p.role === roleId);
+  const handleSaveRoles = () => {
+    // Check assignments
+    const blueUnique = new Set(Object.values(blueRolePicks).filter(Boolean)).size === 5;
+    const redUnique = new Set(Object.values(redRolePicks).filter(Boolean)).size === 5;
+
+    if (!blueUnique || !redUnique) {
+      alert('Por favor, asigna un campeón diferente y único a cada rol.');
+      return;
+    }
+
+    setIsCompletedState(true);
+    updateDraftDatabase(20, bluePicksSeq, redPicksSeq, blueBans, redBans, true, blueRolePicks, redRolePicks);
+    notify('Draft guardado y completado.');
   };
 
+  const handleReassignRoles = () => {
+    setIsCompletedState(false);
+    setCurrentTurnIndex(20);
+  };
+
+  // Champion selection filtering
   const getExcludedChamps = () => {
     const list = [];
-    if (draft.bluePicks) Object.values(draft.bluePicks).forEach(v => v && list.push(v));
-    if (draft.redPicks) Object.values(draft.redPicks).forEach(v => v && list.push(v));
-    if (draft.blueBans) draft.blueBans.forEach(v => v && list.push(v));
-    if (draft.redBans) draft.redBans.forEach(v => v && list.push(v));
+    blueBans.forEach((b) => b && list.push(b));
+    redBans.forEach((b) => b && list.push(b));
+    bluePicksSeq.forEach((p) => p && list.push(p));
+    redPicksSeq.forEach((p) => p && list.push(p));
     return list;
   };
 
@@ -1481,64 +1836,185 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
     if (!champions) return [];
     const q = searchQuery.toLowerCase();
     const exclude = getExcludedChamps();
+    
+    // Find what champ is currently at active slot to not exclude it
+    let currentInActiveSlot = '';
+    if (currentTurnIndex < 20) {
+      const turnInfo = DRAFT_TURNS[currentTurnIndex];
+      if (turnInfo.type === 'ban') {
+        currentInActiveSlot = (turnInfo.team === 'azul' ? blueBans : redBans)[turnInfo.index];
+      } else {
+        currentInActiveSlot = (turnInfo.team === 'azul' ? bluePicksSeq : redPicksSeq)[turnInfo.index];
+      }
+    }
+
     return Object.values(champions)
-      .filter((c) => !exclude.includes(c.id) || getSlotChamp(activeSlot.type, activeSlot.team, activeSlot.id) === c.id)
-      .filter((c) => !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q))
+      .filter((c) => !exclude.includes(c.id) || c.id === currentInActiveSlot)
+      .filter((c) => {
+        if (!q && roleFilter === 'todos') return true;
+        const matchSearch = !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q);
+        if (!matchSearch) return false;
+
+        if (roleFilter === 'todos') return true;
+        const tags = c.tags || [];
+        if (roleFilter === 'top') return tags.includes('Fighter') || tags.includes('Tank');
+        if (roleFilter === 'jg') return tags.includes('Fighter') || tags.includes('Assassin') || tags.includes('Tank');
+        if (roleFilter === 'mid') return tags.includes('Mage') || tags.includes('Assassin');
+        if (roleFilter === 'adc') return tags.includes('Marksman');
+        if (roleFilter === 'sup') return tags.includes('Support') || tags.includes('Tank') || tags.includes('Mage');
+        return true;
+      })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [champions, searchQuery, draft, activeSlot]);
+  }, [champions, searchQuery, roleFilter, currentTurnIndex, blueBans, redBans, bluePicksSeq, redPicksSeq]);
+
+  const getPlayerForRole = (team, roleId) => {
+    return players.find((p) => p.team === team && p.role === roleId);
+  };
 
   const T_blue = TEAMS.azul;
   const T_red = TEAMS.rojo;
+
+  const activeTurn = currentTurnIndex < 20 ? DRAFT_TURNS[currentTurnIndex] : null;
 
   return (
     <div className="comp-editor" style={{ borderColor: 'var(--gold-primary)', background: 'var(--bg-secondary)' }}>
       {/* Editor Header */}
       <div className="draft-editor-header flex items-center justify-between mb-4 flex-wrap gap-2">
         <div style={{ flex: 1 }}>
-          <h2 className="section-header text-gold mb-0" style={{ fontSize: '1.25rem' }}>Draft Planificador de Scrim</h2>
+          <h2 className="section-header text-gold mb-0 animate-pulse-fast" style={{ fontSize: '1.25rem', fontFamily: 'var(--font-display)' }}>
+            🏆 Draft tipo Prodraft
+          </h2>
           <input
             className="draft-name-input input input--rect text-sm font-semibold mt-1"
             value={draft.name}
             onChange={(e) => onUpdate({ name: e.target.value })}
             placeholder="Nombre del Draft (Ej: Scrim vs Team X - Game 1)"
-            style={{ minWidth: '300px', background: 'var(--bg-primary)' }}
+            style={{ minWidth: '320px', background: 'var(--bg-primary)' }}
           />
         </div>
-        <div className="flex gap-2">
+        
+        {/* Navigation & Utilities */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {currentTurnIndex > 0 && currentTurnIndex < 21 && !isCompletedState && (
+            <button className="btn btn--outline btn--sm" onClick={handleUndo}>↩️ Deshacer</button>
+          )}
+          <button className="btn btn--outline btn--sm" onClick={handleReset}>🔄 Reiniciar</button>
           <button className="btn btn--danger btn--sm" onClick={onDelete}>🗑️ Eliminar</button>
           <button className="btn btn--gold btn--sm" onClick={onDone}>✓ Guardar y Salir</button>
         </div>
       </div>
 
-      {/* Bans Row */}
+      {/* Timer Controls Row */}
+      {currentTurnIndex < 20 && !isCompletedState && (
+        <div className="timer-panel card mb-4 flex justify-between items-center flex-wrap gap-3" style={{ background: 'var(--bg-primary)', padding: '0.75rem 1.25rem', borderRadius: 'var(--radius-lg)' }}>
+          <div className="flex items-center gap-4">
+            <div className="timer-toggle flex items-center gap-2">
+              <input
+                id="timer-active-checkbox"
+                type="checkbox"
+                checked={timerActive}
+                onChange={(e) => setTimerActive(e.target.checked)}
+                style={{ cursor: 'pointer' }}
+              />
+              <label htmlFor="timer-active-checkbox" className="text-xs font-semibold cursor-pointer" style={{ color: 'var(--text-secondary)' }}>Timer de Turno Activo</label>
+            </div>
+            
+            {timerActive && (
+              <div className="flex items-center gap-2">
+                <button
+                  className={`btn btn--sm ${isTimerRunning ? 'btn--outline' : 'btn--gold'}`}
+                  onClick={() => setIsTimerRunning(!isTimerRunning)}
+                  style={{ padding: '0.2rem 0.625rem', fontSize: '0.75rem' }}
+                >
+                  {isTimerRunning ? '⏸️ Pausar' : '▶️ Iniciar'}
+                </button>
+                <button
+                  className="btn btn--outline btn--sm"
+                  onClick={() => setTimer(30)}
+                  style={{ padding: '0.2rem 0.625rem', fontSize: '0.75rem' }}
+                >
+                  🔄 Reset
+                </button>
+                <div className="flex items-center gap-1.5 ml-2">
+                  <input
+                    id="auto-advance-checkbox"
+                    type="checkbox"
+                    checked={autoAdvance}
+                    onChange={(e) => setAutoAdvance(e.target.checked)}
+                    style={{ cursor: 'pointer' }}
+                  />
+                  <label htmlFor="auto-advance-checkbox" className="text-[11px] text-muted cursor-pointer">Auto-avanzar al agotar tiempo</label>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Active Turn Label & Time counter */}
+          <div className="flex items-center gap-4">
+            <span className="text-sm font-semibold mono" style={{ color: activeTurn?.team === 'azul' ? 'var(--blue-text)' : 'var(--red-text)' }}>
+              TURNO: <span className="text-gold font-bold">{activeTurn?.label.toUpperCase()}</span>
+            </span>
+            
+            {timerActive && (
+              <div
+                className={`timer-display ${timer <= 5 ? 'timer-display--warning animate-pulse' : ''}`}
+                style={{
+                  fontFamily: 'monospace',
+                  fontSize: '1.5rem',
+                  fontWeight: 'bold',
+                  background: 'rgba(0,0,0,0.3)',
+                  padding: '0.25rem 0.75rem',
+                  borderRadius: 'var(--radius-md)',
+                  minWidth: '55px',
+                  textAlign: 'center',
+                  border: timer <= 5 ? '2px solid var(--red)' : '1px solid var(--border-gold)',
+                  color: timer <= 5 ? 'var(--red-bright)' : 'var(--gold-bright)',
+                }}
+              >
+                {timer}s
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Bans Row (Always displayed at top of board) */}
       <div className="card mb-4" style={{ background: 'var(--bg-primary)', borderColor: 'rgba(201, 170, 113, 0.15)', padding: '0.75rem' }}>
-        <div className="bans-row flex justify-between items-center gap-4">
+        <div className="bans-row flex justify-between items-center gap-4 flex-wrap">
           {/* Blue Bans */}
           <div className="flex items-center gap-2">
             <span className="mono text-xs font-semibold" style={{ color: 'var(--blue-text)' }}>BANS 🔵:</span>
             <div className="flex gap-1.5">
               {Array.from({ length: 5 }).map((_, idx) => {
-                const bChamp = draft.blueBans?.[idx];
-                const isActive = activeSlot.type === 'ban' && activeSlot.team === 'azul' && activeSlot.id === idx;
+                const bChamp = blueBans[idx];
+                const isActive = !isCompletedState && activeTurn?.type === 'ban' && activeTurn?.team === 'azul' && activeTurn?.index === idx;
+                
                 return (
                   <div
                     key={idx}
-                    onClick={() => setActiveSlot({ type: 'ban', team: 'azul', id: idx })}
+                    onClick={() => handleSlotClick('ban', 'azul', idx)}
+                    className={`draft-ban-slot ${isActive ? 'draft-ban-slot--active' : ''}`}
                     style={{
                       cursor: 'pointer',
                       borderRadius: 'var(--radius-sm)',
                       overflow: 'hidden',
                       border: isActive ? '2px solid var(--gold-bright)' : '1px dashed var(--blue-border)',
-                      background: isActive ? 'var(--bg-hover)' : 'transparent',
-                      width: '32px',
-                      height: '32px',
+                      background: isActive ? 'rgba(59,130,246,0.15)' : 'transparent',
+                      width: '34px',
+                      height: '34px',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center'
+                      justifyContent: 'center',
+                      boxShadow: isActive ? '0 0 8px rgba(240, 199, 94, 0.4)' : 'none',
                     }}
                   >
                     {bChamp ? (
-                      <ChampionIcon champId={bChamp} champions={champions} size="sm" />
+                      <div className="relative w-full h-full opacity-60 grayscale hover:grayscale-0 transition-all">
+                        <ChampionIcon champId={bChamp} champions={champions} size="sm" />
+                        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239, 68, 68, 0.2)' }}>
+                          <span style={{ color: 'var(--red)', fontSize: '16px', fontWeight: 'bold' }}>✕</span>
+                        </div>
+                      </div>
                     ) : (
                       <span className="text-muted text-[10px]">{idx + 1}</span>
                     )}
@@ -1553,27 +2029,35 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
             <span className="mono text-xs font-semibold" style={{ color: 'var(--red-text)' }}>BANS 🔴:</span>
             <div className="flex gap-1.5">
               {Array.from({ length: 5 }).map((_, idx) => {
-                const rChamp = draft.redBans?.[idx];
-                const isActive = activeSlot.type === 'ban' && activeSlot.team === 'rojo' && activeSlot.id === idx;
+                const rChamp = redBans[idx];
+                const isActive = !isCompletedState && activeTurn?.type === 'ban' && activeTurn?.team === 'rojo' && activeTurn?.index === idx;
+                
                 return (
                   <div
                     key={idx}
-                    onClick={() => setActiveSlot({ type: 'ban', team: 'rojo', id: idx })}
+                    onClick={() => handleSlotClick('ban', 'rojo', idx)}
+                    className={`draft-ban-slot ${isActive ? 'draft-ban-slot--active' : ''}`}
                     style={{
                       cursor: 'pointer',
                       borderRadius: 'var(--radius-sm)',
                       overflow: 'hidden',
                       border: isActive ? '2px solid var(--gold-bright)' : '1px dashed var(--red-border)',
-                      background: isActive ? 'var(--bg-hover)' : 'transparent',
-                      width: '32px',
-                      height: '32px',
+                      background: isActive ? 'rgba(239, 68, 68, 0.15)' : 'transparent',
+                      width: '34px',
+                      height: '34px',
                       display: 'flex',
                       alignItems: 'center',
-                      justifyContent: 'center'
+                      justifyContent: 'center',
+                      boxShadow: isActive ? '0 0 8px rgba(240, 199, 94, 0.4)' : 'none',
                     }}
                   >
                     {rChamp ? (
-                      <ChampionIcon champId={rChamp} champions={champions} size="sm" />
+                      <div className="relative w-full h-full opacity-60 grayscale hover:grayscale-0 transition-all">
+                        <ChampionIcon champId={rChamp} champions={champions} size="sm" />
+                        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(239, 68, 68, 0.2)' }}>
+                          <span style={{ color: 'var(--red)', fontSize: '16px', fontWeight: 'bold' }}>✕</span>
+                        </div>
+                      </div>
                     ) : (
                       <span className="text-muted text-[10px]">{idx + 1}</span>
                     )}
@@ -1585,252 +2069,350 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
         </div>
       </div>
 
-      {/* Main Board: Blue Picks | Center Selection | Red Picks */}
+      {/* Main Board: Blue Picks | Center Selection/Roles | Red Picks */}
       <div className="draft-board">
-        {/* Blue Team Picks */}
+        {/* Blue Team Picks Column */}
         <div className="draft-board__blue" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div className="flex items-center justify-between pb-1 border-b border-light">
             <span className="font-bold text-sm" style={{ color: 'var(--blue-text)', fontFamily: 'var(--font-display)', fontSize: '1rem' }}>🔵 {T_blue.name}</span>
-            <span className="text-[10px] text-muted uppercase tracking-wider">Selección</span>
+            <span className="text-[10px] text-muted uppercase tracking-wider">Picks</span>
           </div>
 
-          {ROLES.map((role) => {
-            const pChamp = draft.bluePicks?.[role.id];
-            const player = getPlayerForRole('azul', role.id);
-            const isActive = activeSlot.type === 'pick' && activeSlot.team === 'azul' && activeSlot.id === role.id;
-            return (
-              <div
-                key={role.id}
-                onClick={() => setActiveSlot({ type: 'pick', team: 'azul', id: role.id })}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                  padding: '0.625rem',
-                  borderRadius: 'var(--radius-lg)',
-                  border: isActive ? '2px solid var(--gold-bright)' : '1px solid var(--blue-border)',
-                  background: isActive ? 'rgba(59, 130, 246, 0.15)' : 'var(--bg-primary)',
-                  boxShadow: isActive ? '0 0 10px rgba(201,170,113,0.15)' : 'none',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
-                  <span className="text-lg leading-none">{role.icon}</span>
-                  <span className="mono text-[8px] text-muted mt-1 uppercase">{role.short}</span>
-                </div>
-
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center gap-1.5">
-                    {pChamp ? (
-                      <span className="font-bold text-sm text-primary truncate">{champions?.[pChamp]?.name || pChamp}</span>
-                    ) : (
-                      <span className="text-sm text-muted italic">Seleccionar...</span>
-                    )}
-                  </div>
-                  <span className="text-[10px] text-faint truncate">
-                    {player ? `Jugador: ${player.name}` : 'Sin jugador asignado'}
-                  </span>
-
-                  {/* Champion Pool quick buttons */}
-                  {player && player.pool?.length > 0 && (
-                    <div className="flex gap-1 mt-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                      {player.pool.map((c) => (
-                        <button
-                          key={c.championId}
-                          title={`${champions?.[c.championId]?.name || c.championId} (${c.tier})`}
-                          onClick={() => {
-                            setActiveSlot({ type: 'pick', team: 'azul', id: role.id });
-                            setSlot(c.championId);
-                          }}
-                          style={{
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 0,
-                            cursor: 'pointer',
-                            opacity: pChamp === c.championId ? 1 : 0.65,
-                            transform: pChamp === c.championId ? 'scale(1.15)' : 'none'
-                          }}
-                        >
-                          <ChampionIcon
-                            champId={c.championId}
-                            champions={champions}
-                            size="sm"
-                            circle
-                            borderColor={c.tier === 'comfort' ? 'var(--gold-bright)' : 'var(--blue-bright)'}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </div>
-
-                <ChampionIcon champId={pChamp} champions={champions} size="xl" borderColor={pChamp ? 'var(--blue)' : undefined} />
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Center Panel (Champion Selector Grid) */}
-        <div className="draft-board__selector card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem', background: 'var(--bg-primary)' }}>
-          <div className="flex items-center justify-between pb-1 border-b border-light">
-            <span className="mono text-[10px] uppercase text-gold font-bold">
-              {activeSlot.type === 'pick'
-                ? `Pick ${activeSlot.team === 'azul' ? 'Azul' : 'Rojo'} - ${activeSlot.id.toUpperCase()}`
-                : `Ban ${activeSlot.team === 'azul' ? 'Azul' : 'Rojo'} - #${activeSlot.id + 1}`}
-            </span>
-            <button
-              className="btn btn--outline btn--sm text-[10px] px-1 py-0.5"
-              onClick={() => {
-                if (activeSlot.type === 'pick') {
-                  const picksKey = activeSlot.team === 'azul' ? 'bluePicks' : 'redPicks';
-                  onUpdate({ [picksKey]: { ...draft[picksKey], [activeSlot.id]: '' } });
-                } else {
-                  const bansKey = activeSlot.team === 'azul' ? 'blueBans' : 'redBans';
-                  const newBans = [...(draft[bansKey] || ['', '', '', '', ''])];
-                  newBans[activeSlot.id] = '';
-                  onUpdate({ [bansKey]: newBans });
-                }
-              }}
-            >
-              Borrar
-            </button>
-          </div>
-
-          <input
-            className="input text-xs w-full"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Buscar campeón..."
-            style={{ borderRadius: 'var(--radius-md)', padding: '0.35rem 0.625rem' }}
-          />
-
-          <div
-            style={{
-              flex: 1,
-              overflowY: 'auto',
-              maxHeight: '380px',
-              display: 'grid',
-              gridTemplateColumns: 'repeat(4, 1fr)',
-              gap: '0.375rem',
-              paddingRight: '0.25rem'
-            }}
-          >
-            {filteredChamps.map((champ) => {
-              const isSelected = getSlotChamp(activeSlot.type, activeSlot.team, activeSlot.id) === champ.id;
+          {/* Sequential picks layout during drafting, role-mapped if completed */}
+          {isCompletedState ? (
+            // Role mapped display
+            ROLES.map((role) => {
+              const pChamp = blueRolePicks[role.id];
+              const player = getPlayerForRole('azul', role.id);
               return (
-                <button
-                  key={champ.id}
-                  onClick={() => setSlot(champ.id)}
-                  title={champ.name}
+                <div
+                  key={role.id}
                   style={{
-                    background: isSelected ? 'var(--gold-glow)' : 'var(--bg-secondary)',
-                    border: isSelected ? '1px solid var(--gold-bright)' : '1px solid transparent',
-                    borderRadius: 'var(--radius-md)',
-                    padding: '0.25rem',
-                    cursor: 'pointer',
                     display: 'flex',
-                    flexDirection: 'column',
                     alignItems: 'center',
-                    gap: '0.125rem',
-                    transition: 'all 0.1s ease'
+                    gap: '0.75rem',
+                    padding: '0.625rem',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px solid var(--blue-border)',
+                    background: 'var(--bg-primary)',
                   }}
                 >
-                  <ChampionIcon champId={champ.id} champions={champions} size="md" />
-                  <span
-                    className="truncate text-[9px] w-full text-center"
-                    style={{ color: isSelected ? 'var(--gold-bright)' : 'var(--text-secondary)' }}
-                  >
-                    {champ.name}
-                  </span>
-                </button>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
+                    <span className="text-lg leading-none">{role.icon}</span>
+                    <span className="mono text-[8px] text-muted mt-1 uppercase">{role.short}</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span className="font-bold text-sm text-primary truncate">
+                      {champions?.[pChamp]?.name || pChamp || 'Ninguno'}
+                    </span>
+                    <span className="text-[10px] text-faint truncate">
+                      {player ? `Jugador: ${player.name}` : 'Sin jugador asignado'}
+                    </span>
+                  </div>
+                  <ChampionIcon champId={pChamp} champions={champions} size="xl" borderColor={pChamp ? 'var(--blue)' : undefined} />
+                </div>
               );
-            })}
-          </div>
+            })
+          ) : (
+            // Sequential pick slots
+            Array.from({ length: 5 }).map((_, idx) => {
+              const pChamp = bluePicksSeq[idx];
+              const isSlotActive = !isCompletedState && activeTurn?.type === 'pick' && activeTurn?.team === 'azul' && activeTurn?.index === idx;
+              const displayChamp = isSlotActive && preSelectedChamp ? preSelectedChamp : pChamp;
+
+              return (
+                <div
+                  key={idx}
+                  onClick={() => handleSlotClick('pick', 'azul', idx)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.625rem',
+                    borderRadius: 'var(--radius-lg)',
+                    border: isSlotActive ? '2px solid var(--blue-bright)' : '1px solid var(--blue-border)',
+                    background: isSlotActive ? 'rgba(59, 130, 246, 0.15)' : 'var(--bg-primary)',
+                    boxShadow: isSlotActive ? '0 0 10px rgba(59,130,246,0.3)' : 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
+                    <span className="text-sm font-bold text-muted">P{idx + 1}</span>
+                    <span className="mono text-[8px] text-muted mt-1 uppercase">SELECCIÓN</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span className={`font-bold text-sm truncate ${isSlotActive && preSelectedChamp ? 'text-gold animate-pulse' : 'text-primary'}`}>
+                      {champions?.[displayChamp]?.name || displayChamp || (isSlotActive ? 'Eligiendo...' : 'Vacío')}
+                    </span>
+                  </div>
+                  <ChampionIcon champId={displayChamp} champions={champions} size="xl" borderColor={displayChamp ? 'var(--blue)' : undefined} />
+                </div>
+              );
+            })
+          )}
         </div>
 
-        {/* Red Team Picks */}
+        {/* Center Panel (Champion Selector Grid OR Role Assignment View) */}
+        {isCompletedState ? (
+          // Completed State Overview
+          <div className="draft-board__selector card flex flex-col items-center justify-center text-center p-6" style={{ background: 'var(--bg-primary)', gap: '1rem' }}>
+            <span className="text-4xl animate-bounce">👑</span>
+            <h3 className="text-gold font-bold text-base" style={{ fontFamily: 'var(--font-display)' }}>Draft Finalizado y Guardado</h3>
+            <p className="text-xs text-muted max-w-[280px]">Este draft ha sido configurado y guardado. Puedes volver a configurar los roles o reiniciarlo si lo deseas.</p>
+            <button className="btn btn--gold w-full max-w-[200px]" onClick={handleReassignRoles}>
+              ✏️ Reasignar Roles
+            </button>
+          </div>
+        ) : currentTurnIndex === 20 ? (
+          // Role Assignment Screen (Turn 20)
+          <div className="draft-board__selector card" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem', padding: '1rem', background: 'var(--bg-primary)', borderColor: 'var(--border-gold)' }}>
+            <div className="pb-1 border-b border-light flex justify-between items-center">
+              <span className="mono text-[11px] uppercase text-gold font-bold">📋 ASIGNACIÓN DE ROLES</span>
+              <span className="text-[10px] text-muted font-semibold">Fase Final</span>
+            </div>
+            
+            <p className="text-[11px] text-muted leading-relaxed">
+              Mapea los campeones seleccionados a sus respectivas posiciones. Al cambiar un rol ocupado, se intercambiarán automáticamente.
+            </p>
+
+            <div className="flex flex-col gap-4 mt-2 max-h-[350px] overflow-y-auto pr-1">
+              {/* Blue Team Role Selectors */}
+              <div>
+                <span className="text-xs font-bold block mb-1.5 text-blue-text">Roles Equipo Azul:</span>
+                <div className="flex flex-col gap-2">
+                  {ROLES.map((role) => (
+                    <div key={role.id} className="flex items-center justify-between gap-2 bg-secondary p-1.5 rounded-md text-xs border border-light">
+                      <span className="flex items-center gap-1 text-[11px] font-semibold">
+                        <span>{role.icon}</span>
+                        <span>{role.name}</span>
+                      </span>
+                      <select
+                        className="input text-xs"
+                        style={{ padding: '0.15rem 0.5rem', background: 'var(--bg-primary)', border: '1px solid var(--border-gold)', borderRadius: 'var(--radius-sm)', maxWidth: '140px', color: 'var(--text-primary)' }}
+                        value={blueRolePicks[role.id]}
+                        onChange={(e) => handleRoleChange('azul', role.id, e.target.value)}
+                      >
+                        <option value="">-- Seleccionar --</option>
+                        {bluePicksSeq.filter(Boolean).map((cId, cIdx) => (
+                          <option key={cIdx} value={cId}>
+                            {champions?.[cId]?.name || cId}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Red Team Role Selectors */}
+              <div>
+                <span className="text-xs font-bold block mb-1.5 text-red-text">Roles Equipo Rojo:</span>
+                <div className="flex flex-col gap-2">
+                  {ROLES.map((role) => (
+                    <div key={role.id} className="flex items-center justify-between gap-2 bg-secondary p-1.5 rounded-md text-xs border border-light">
+                      <span className="flex items-center gap-1 text-[11px] font-semibold">
+                        <span>{role.icon}</span>
+                        <span>{role.name}</span>
+                      </span>
+                      <select
+                        className="input text-xs"
+                        style={{ padding: '0.15rem 0.5rem', background: 'var(--bg-primary)', border: '1px solid var(--border-gold)', borderRadius: 'var(--radius-sm)', maxWidth: '140px', color: 'var(--text-primary)' }}
+                        value={redRolePicks[role.id]}
+                        onChange={(e) => handleRoleChange('rojo', role.id, e.target.value)}
+                      >
+                        <option value="">-- Seleccionar --</option>
+                        {redPicksSeq.filter(Boolean).map((cId, cIdx) => (
+                          <option key={cIdx} value={cId}>
+                            {champions?.[cId]?.name || cId}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <button className="btn btn--gold w-full mt-3 font-semibold text-xs py-2" onClick={handleSaveRoles}>
+              💾 Confirmar y Guardar Draft
+            </button>
+          </div>
+        ) : (
+          // Active Champion Selector Grid
+          <div className="draft-board__selector card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '0.75rem', background: 'var(--bg-primary)' }}>
+            <div className="flex items-center justify-between pb-1 border-b border-light flex-wrap gap-2">
+              <span className="mono text-[10px] uppercase text-gold font-bold">
+                {activeTurn?.type === 'pick'
+                  ? `Pick ${activeTurn?.team === 'azul' ? 'Azul' : 'Rojo'} - P${activeTurn?.index + 1}`
+                  : `Ban ${activeTurn?.team === 'azul' ? 'Azul' : 'Rojo'} - #${activeTurn?.index + 1}`}
+              </span>
+              
+              {/* Optional Lock In / Confirm Button */}
+              <button
+                className={`btn btn--sm font-bold text-xs py-1 px-3 ${preSelectedChamp ? 'btn--gold animate-pulse-fast' : 'btn--outline opacity-50'}`}
+                disabled={!preSelectedChamp}
+                onClick={() => lockInChamp()}
+              >
+                🔒 FIJAR SELECCIÓN
+              </button>
+            </div>
+
+            {/* Role Filter Buttons */}
+            <div className="flex gap-1 overflow-x-auto pb-1" style={{ borderBottom: '1px solid var(--border-light)' }}>
+              {ROLE_FILTERS.map((filter) => (
+                <button
+                  key={filter.id}
+                  className={`btn btn--sm text-[10px] py-1 px-2 flex items-center gap-1 ${roleFilter === filter.id ? 'btn--gold' : 'btn--outline'}`}
+                  onClick={() => setRoleFilter(filter.id)}
+                  style={{ minWidth: 'fit-content' }}
+                >
+                  <span>{filter.icon}</span>
+                  <span>{filter.name}</span>
+                </button>
+              ))}
+            </div>
+
+            {/* Search Champion Input */}
+            <input
+              className="input text-xs w-full"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Buscar campeón..."
+              style={{ borderRadius: 'var(--radius-md)', padding: '0.35rem 0.625rem' }}
+            />
+
+            {/* Champion Grid */}
+            <div
+              className="champions-grid"
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                maxHeight: '340px',
+                display: 'grid',
+                gridTemplateColumns: 'repeat(4, 1fr)',
+                gap: '0.375rem',
+                paddingRight: '0.25rem'
+              }}
+            >
+              {filteredChamps.map((champ) => {
+                const isSelected = preSelectedChamp === champ.id;
+                
+                return (
+                  <button
+                    key={champ.id}
+                    onClick={() => setPreSelectedChamp(champ.id)}
+                    onDoubleClick={() => lockInChamp(champ.id)}
+                    title={`${champ.name} (Doble clic para fijar)`}
+                    className={`draft-champ-item ${isSelected ? 'draft-champ-item--selected animate-pulse-fast' : ''}`}
+                    style={{
+                      background: isSelected ? 'var(--gold-glow)' : 'var(--bg-secondary)',
+                      border: isSelected ? '1px solid var(--gold-bright)' : '1px solid transparent',
+                      borderRadius: 'var(--radius-md)',
+                      padding: '0.25rem',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      gap: '0.125rem',
+                      transition: 'all 0.1s ease',
+                      boxShadow: isSelected ? '0 0 8px rgba(240, 199, 94, 0.35)' : 'none',
+                    }}
+                  >
+                    <ChampionIcon champId={champ.id} champions={champions} size="md" />
+                    <span
+                      className="truncate text-[9px] w-full text-center"
+                      style={{ color: isSelected ? 'var(--gold-bright)' : 'var(--text-secondary)' }}
+                    >
+                      {champ.name}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Red Team Picks Column */}
         <div className="draft-board__red" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div className="flex items-center justify-between pb-1 border-b border-light">
-            <span className="text-[10px] text-muted uppercase tracking-wider">Selección</span>
+            <span className="text-[10px] text-muted uppercase tracking-wider">Picks</span>
             <span className="font-bold text-sm" style={{ color: 'var(--red-text)', fontFamily: 'var(--font-display)', fontSize: '1rem' }}>🔴 {T_red.name}</span>
           </div>
 
-          {ROLES.map((role) => {
-            const pChamp = draft.redPicks?.[role.id];
-            const player = getPlayerForRole('rojo', role.id);
-            const isActive = activeSlot.type === 'pick' && activeSlot.team === 'rojo' && activeSlot.id === role.id;
-            return (
-              <div
-                key={role.id}
-                onClick={() => setActiveSlot({ type: 'pick', team: 'rojo', id: role.id })}
-                style={{
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.75rem',
-                  padding: '0.625rem',
-                  borderRadius: 'var(--radius-lg)',
-                  border: isActive ? '2px solid var(--gold-bright)' : '1px solid var(--red-border)',
-                  background: isActive ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg-primary)',
-                  boxShadow: isActive ? '0 0 10px rgba(201,170,113,0.15)' : 'none',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
-              >
-                <ChampionIcon champId={pChamp} champions={champions} size="xl" borderColor={pChamp ? 'var(--red)' : undefined} />
-
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
-                  <div className="flex items-center gap-1.5">
-                    {pChamp ? (
-                      <span className="font-bold text-sm text-primary truncate">{champions?.[pChamp]?.name || pChamp}</span>
-                    ) : (
-                      <span className="text-sm text-muted italic">Seleccionar...</span>
-                    )}
+          {/* Sequential picks layout during drafting, role-mapped if completed */}
+          {isCompletedState ? (
+            // Role mapped display
+            ROLES.map((role) => {
+              const pChamp = redRolePicks[role.id];
+              const player = getPlayerForRole('rojo', role.id);
+              return (
+                <div
+                  key={role.id}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.625rem',
+                    borderRadius: 'var(--radius-lg)',
+                    border: '1px solid var(--red-border)',
+                    background: 'var(--bg-primary)',
+                  }}
+                >
+                  <ChampionIcon champId={pChamp} champions={champions} size="xl" borderColor={pChamp ? 'var(--red)' : undefined} />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span className="font-bold text-sm text-primary truncate">
+                      {champions?.[pChamp]?.name || pChamp || 'Ninguno'}
+                    </span>
+                    <span className="text-[10px] text-faint truncate">
+                      {player ? `Jugador: ${player.name}` : 'Sin jugador asignado'}
+                    </span>
                   </div>
-                  <span className="text-[10px] text-faint truncate">
-                    {player ? `Jugador: ${player.name}` : 'Sin jugador asignado'}
-                  </span>
-
-                  {/* Champion Pool quick buttons */}
-                  {player && player.pool?.length > 0 && (
-                    <div className="flex gap-1 mt-1 flex-wrap" onClick={(e) => e.stopPropagation()}>
-                      {player.pool.map((c) => (
-                        <button
-                          key={c.championId}
-                          title={`${champions?.[c.championId]?.name || c.championId} (${c.tier})`}
-                          onClick={() => {
-                            setActiveSlot({ type: 'pick', team: 'rojo', id: role.id });
-                            setSlot(c.championId);
-                          }}
-                          style={{
-                            background: 'transparent',
-                            border: 'none',
-                            padding: 0,
-                            cursor: 'pointer',
-                            opacity: pChamp === c.championId ? 1 : 0.65,
-                            transform: pChamp === c.championId ? 'scale(1.15)' : 'none'
-                          }}
-                        >
-                          <ChampionIcon
-                            champId={c.championId}
-                            champions={champions}
-                            size="sm"
-                            circle
-                            borderColor={c.tier === 'comfort' ? 'var(--gold-bright)' : 'var(--red-bright)'}
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  )}
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
+                    <span className="text-lg leading-none">{role.icon}</span>
+                    <span className="mono text-[8px] text-muted mt-1 uppercase">{role.short}</span>
+                  </div>
                 </div>
+              );
+            })
+          ) : (
+            // Sequential pick slots
+            Array.from({ length: 5 }).map((_, idx) => {
+              const pChamp = redPicksSeq[idx];
+              const isSlotActive = !isCompletedState && activeTurn?.type === 'pick' && activeTurn?.team === 'rojo' && activeTurn?.index === idx;
+              const displayChamp = isSlotActive && preSelectedChamp ? preSelectedChamp : pChamp;
 
-                <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
-                  <span className="text-lg leading-none">{role.icon}</span>
-                  <span className="mono text-[8px] text-muted mt-1 uppercase">{role.short}</span>
+              return (
+                <div
+                  key={idx}
+                  onClick={() => handleSlotClick('pick', 'rojo', idx)}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.75rem',
+                    padding: '0.625rem',
+                    borderRadius: 'var(--radius-lg)',
+                    border: isSlotActive ? '2px solid var(--red-bright)' : '1px solid var(--red-border)',
+                    background: isSlotActive ? 'rgba(239, 68, 68, 0.15)' : 'var(--bg-primary)',
+                    boxShadow: isSlotActive ? '0 0 10px rgba(239,68,68,0.3)' : 'none',
+                    cursor: 'pointer',
+                    transition: 'all 0.15s ease'
+                  }}
+                >
+                  <ChampionIcon champId={displayChamp} champions={champions} size="xl" borderColor={displayChamp ? 'var(--red)' : undefined} />
+                  <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0 }}>
+                    <span className={`font-bold text-sm truncate ${isSlotActive && preSelectedChamp ? 'text-gold animate-pulse' : 'text-primary'}`}>
+                      {champions?.[displayChamp]?.name || displayChamp || (isSlotActive ? 'Eligiendo...' : 'Vacío')}
+                    </span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: '40px' }}>
+                    <span className="text-sm font-bold text-muted">P{idx + 1}</span>
+                    <span className="mono text-[8px] text-muted mt-1 uppercase">SELECCIÓN</span>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          )}
         </div>
       </div>
 

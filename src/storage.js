@@ -715,6 +715,36 @@ export async function removeMemberFromTeam(userId, teamId) {
 }
 
 // ═══════════════════════════════════════════════════════════
+// HISTORIAL DE PARTIDAS — auto-limpieza
+// ═══════════════════════════════════════════════════════════
+
+const MAX_GAMES_PER_USER = 10;
+
+export async function pruneOldGames(userId) {
+  if (!isSupabaseConfigured || !userId) return;
+  try {
+    // IDs de las partidas que SÍ se conservan (las N más recientes)
+    const { data: keep } = await supabase
+      .from('summoner_games')
+      .select('id')
+      .eq('user_id', userId)
+      .order('played_at', { ascending: false })
+      .limit(MAX_GAMES_PER_USER);
+
+    if (!keep || keep.length < MAX_GAMES_PER_USER) return; // nada que limpiar
+
+    const keepIds = keep.map(g => g.id);
+    await supabase
+      .from('summoner_games')
+      .delete()
+      .eq('user_id', userId)
+      .not('id', 'in', `(${keepIds.map(id => `"${id}"`).join(',')})`);
+  } catch (err) {
+    console.warn('No se pudo limpiar el historial antiguo:', err.message);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
 // TEAM RIOT STATS — datos agregados para la pestaña Stats
 // ═══════════════════════════════════════════════════════════
 
@@ -1210,8 +1240,17 @@ export async function loadTeamLadders(teamId) {
     startDate: l.start_date,
     endDate: l.end_date,
     status: l.status,
+    createdBy: l.created_by || '',
     createdAt: l.created_at
   }));
+}
+
+export async function deleteLadder(ladderId) {
+  if (!isSupabaseConfigured || !ladderId) throw new Error('Supabase no configurado');
+  // Las tablas relacionadas (ladder_teams, ladder_participants, ladder_invites)
+  // se borran en cascada por sus FK ON DELETE CASCADE.
+  const { error } = await supabase.from('ladders').delete().eq('id', ladderId);
+  if (error) throw new Error('Error al eliminar el ladder: ' + error.message);
 }
 
 export async function loadLadderDetails(ladderId) {
@@ -1454,8 +1493,9 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
       console.error('Error al actualizar cortes reales en sync:', e);
     }
 
-    // 3. Obtener últimos 5 Match IDs
-    const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5`;
+    // 3. Obtener últimos 5 Match IDs — SOLO Ranked Solo/Duo (queue=420).
+    //    Excluye Flex (440), ARAM (450), Arena (1700), normales, etc.
+    const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5&queue=420`;
     const matchIds = await fetchRiotApi(matchesUrl);
 
     // Obtener los IDs de las partidas que ya tenemos en la base de datos para no duplicar
@@ -1491,9 +1531,15 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
 
       if (!match || !match.info || !match.info.participants) continue;
 
+      // Defensa extra: solo Ranked Solo/Duo (la URL ya filtra queue=420)
+      if (match.info.queueId !== 420) continue;
+
       // Buscar al propio jugador en la partida
       const meParticipant = match.info.participants.find(p => p.puuid === puuid);
       if (!meParticipant) continue;
+
+      // Excluir remakes: terminó por rendición temprana o duró menos de 5 min
+      if (meParticipant.gameEndedInEarlySurrender || (match.info.gameDuration || 0) < 300) continue;
 
       const myTeamId = meParticipant.teamId;
       const myResult = meParticipant.win ? 'win' : 'loss';
@@ -1553,6 +1599,10 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
         .from('summoner_games')
         .insert(newGames);
       if (insertErr) throw new Error('Error al guardar partidas reales: ' + insertErr.message);
+
+      // Auto-limpieza: conservar solo las últimas N partidas por usuario
+      // para que la base de datos no crezca indefinidamente.
+      await pruneOldGames(userId);
     }
 
     // Actualizar el perfil del invocador con su Elo real de Riot

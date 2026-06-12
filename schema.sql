@@ -257,6 +257,8 @@ CREATE TABLE IF NOT EXISTS ladder_invites (
 );
 
 -- Tabla de historial de partidas de invocador
+-- Solo Ranked Solo/Duo (queue 420), sin remakes. La app conserva máximo
+-- 10 partidas por usuario (auto-limpieza en cada sync).
 CREATE TABLE IF NOT EXISTS summoner_games (
   id              TEXT PRIMARY KEY,
   user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -270,6 +272,9 @@ CREATE TABLE IF NOT EXISTS summoner_games (
   played_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   players_matched JSONB DEFAULT '[]'              -- Array de { userId, summonerName, champion, sameTeam, result }
 );
+
+-- Índice para cargar/limpiar el historial por usuario eficientemente
+CREATE INDEX IF NOT EXISTS summoner_games_user_played_idx ON summoner_games(user_id, played_at DESC);
 
 -- Habilitar RLS
 ALTER TABLE ladders             ENABLE ROW LEVEL SECURITY;

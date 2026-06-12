@@ -21,7 +21,7 @@ import {
   getTeamRiotStats,
   transferCaptain,
   getTeamWindows, sendScrimRequest, loadIncomingScrimRequests, respondScrimRequest,
-  getUserProfile, updateUserProfile, createLadder, loadTeamLadders, loadLadderDetails,
+  getUserProfile, updateUserProfile, createLadder, loadTeamLadders, loadLadderDetails, deleteLadder,
   ensureUserInLadder, sendLadderInvite, loadIncomingLadderInvites, respondLadderInvite,
   loadUserGames, syncUserGames, TIERS, DIVISIONS, lpToRank, backgroundSyncParticipant,
   getSummonerDeterministicLpValue,
@@ -474,6 +474,7 @@ export default function App() {
           currentUserName={currentUserName}
           myTeamRole={myTeamRole}
           players={players}
+          champions={champions}
         />
       )}
 
@@ -3142,7 +3143,7 @@ function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, team
    LADDER TAB (Clasificación y Tracker)
    ═══════════════════════════════════════════════════════════════════ */
 
-function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamRole, players }) {
+function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamRole, players, champions }) {
   const [profile, setProfile] = useState(null);
   const [ladders, setLadders] = useState([]);
   const [selectedLadderId, setSelectedLadderId] = useState('');
@@ -3397,6 +3398,27 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
     }
   };
 
+  // Solo el creador del ladder o el capitán del equipo dueño pueden eliminarlo
+  const selectedLadder = ladders.find(l => l.id === selectedLadderId) || null;
+  const canDeleteLadder = !!selectedLadder && (
+    selectedLadder.createdBy === currentUserId ||
+    (myTeamRole === 'captain' && selectedLadder.teamId === teamCode)
+  );
+
+  const handleDeleteLadder = async () => {
+    if (!selectedLadder || !canDeleteLadder) return;
+    if (!window.confirm(`¿Eliminar el ladder "${selectedLadder.name}"? Se borrará la clasificación completa y los participantes. Esta acción no se puede deshacer.`)) return;
+    try {
+      await deleteLadder(selectedLadder.id);
+      setSelectedLadderId('');
+      setLadderDetails(null);
+      await fetchLadders();
+      notify('Ladder eliminado.', 'success');
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  };
+
   // Convertir LP numérico a texto de rango en español
   const getRankName = (lpVal, regionOrSummoner) => {
     if (lpVal === undefined || lpVal <= 0) return 'Unranked';
@@ -3579,8 +3601,20 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                     Finaliza el: <span className="font-bold text-primary">{new Date(ladderDetails.endDate).toLocaleDateString()}</span>
                   </div>
                 </div>
-                <div className="text-xs text-faint">
-                  Equipos participantes: <span className="text-primary font-bold">{ladderDetails.teams.map(t => t.name).join(', ')}</span>
+                <div className="flex items-center gap-3">
+                  <div className="text-xs text-faint">
+                    Equipos participantes: <span className="text-primary font-bold">{ladderDetails.teams.map(t => t.name).join(', ')}</span>
+                  </div>
+                  {canDeleteLadder && (
+                    <button
+                      className="btn btn--ghost btn--sm"
+                      style={{ color: 'var(--red-text)', fontSize: '0.7rem' }}
+                      title="Eliminar este ladder (solo creador o capitán)"
+                      onClick={handleDeleteLadder}
+                    >
+                      🗑️ Eliminar
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -3664,13 +3698,31 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
           {/* 3. OP.GG / Probuilds Game History Tracker */}
           {activeGameViewerUser && (
             <div className="card">
-              <div className="flex items-center justify-between mb-4 border-b border-faint pb-3">
+              <div className="flex items-center justify-between mb-4 border-b border-faint pb-3 flex-wrap gap-2">
                 <h3 className="font-bold text-md text-gold flex items-center gap-2">
-                  🛡️ Historial de Partidas Recientes — <span className="text-primary">{activeGameViewerName}</span>
+                  🛡️ Last 5 Games — <span className="text-primary">{activeGameViewerName}</span>
                 </h3>
-                {activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId && (
-                  <span className="privacy-badge privacy-badge--private">Privado</span>
-                )}
+                <div className="flex items-center gap-2">
+                  {userGames.length > 0 && (() => {
+                    const last5 = userGames.slice(0, 5);
+                    const wins = last5.filter(g => g.result === 'win').length;
+                    let streak = 0;
+                    const first = userGames[0]?.result;
+                    for (const g of userGames) { if (g.result === first) streak++; else break; }
+                    const streakLabel = first === 'win'
+                      ? (streak >= 3 ? `🔥 ${streak}W` : `${streak}W`)
+                      : (streak >= 3 ? `🧊 ${streak}L` : `${streak}L`);
+                    return (
+                      <>
+                        <span className="chip chip--sm chip--gold mono">{wins}V – {last5.length - wins}D</span>
+                        <span className={`chip chip--sm mono ${first === 'win' ? 'chip--blue' : 'chip--red'}`}>{streakLabel}</span>
+                      </>
+                    );
+                  })()}
+                  {activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId && (
+                    <span className="privacy-badge privacy-badge--private">Privado</span>
+                  )}
+                </div>
               </div>
 
               {activeGameViewerPrivacy === 'private' && activeGameViewerUser !== currentUserId ? (
@@ -3684,19 +3736,19 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                 </div>
               ) : (
                 <div className="flex flex-col gap-3">
-                  {userGames.map(game => {
+                  {userGames.slice(0, 5).map(game => {
                     const isWin = game.result === 'win';
                     const relativeTime = formatRelativeTime(game.playedAt);
-                    
+
                     return (
-                      <div 
-                        key={game.id} 
+                      <div
+                        key={game.id}
                         className={`game-history-card ${isWin ? 'game-history-card--win' : 'game-history-card--loss'}`}
                       >
                         <div className="game-history-card__row flex items-center gap-4 flex-wrap justify-between">
                           <div className="flex items-center gap-3">
                             <div className="game-history-card__champ-container">
-                              <span className="game-history-card__champ-emoji">⚔️</span>
+                              <ChampionIcon champId={game.champion} champions={champions} size="lg" borderColor={isWin ? 'var(--blue)' : 'var(--red)'} />
                               <div>
                                 <div className="game-history-card__champ-name font-bold">
                                   {game.champion}

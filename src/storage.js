@@ -714,6 +714,36 @@ export async function removeMemberFromTeam(userId, teamId) {
   if (error) throw new Error('Error al eliminar miembro: ' + error.message);
 }
 
+// ═══════════════════════════════════════════════════════════
+// TEAM RIOT STATS — datos agregados para la pestaña Stats
+// ═══════════════════════════════════════════════════════════
+
+export async function getTeamRiotStats(userIds) {
+  if (!isSupabaseConfigured || !userIds || userIds.length === 0) {
+    return { profiles: [], games: [] };
+  }
+
+  const [{ data: profiles }, { data: games }] = await Promise.all([
+    supabase
+      .from('users')
+      .select('id, name, summoner_name, current_tier, current_division, current_lp, current_lp_value, games_privacy')
+      .in('id', userIds),
+    supabase
+      .from('summoner_games')
+      .select('user_id, champion, role, result, kda_kills, kda_deaths, kda_assists, played_at')
+      .in('user_id', userIds)
+      .order('played_at', { ascending: false })
+      .limit(100),
+  ]);
+
+  // Respetar privacidad: excluir partidas de usuarios con perfil privado
+  const privateIds = new Set((profiles || []).filter(p => p.games_privacy === 'private').map(p => p.id));
+  return {
+    profiles: profiles || [],
+    games: (games || []).filter(g => !privateIds.has(g.user_id)),
+  };
+}
+
 export function importJSON(jsonString) {
   const data = JSON.parse(jsonString);
   if (!data || !Array.isArray(data.players)) {

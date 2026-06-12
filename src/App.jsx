@@ -3,7 +3,7 @@
    Main application with tabs: Horarios, Composiciones, Scrims, Stats
    ======================================================================== */
 
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback, Fragment } from 'react';
 import {
   DAYS, START_HOUR, NUM_SLOTS, slotHour, fmt, GOLD, GOLD_BRIGHT,
   TEAMS, TEAM_IDS, ROLES, ROLE_MAP, COMP_STYLES, SCRIM_TAGS,
@@ -18,6 +18,7 @@ import {
   createTeamWithCaptain,
   requestJoinTeam, loadJoinRequests,
   acceptJoinRequest, rejectJoinRequest, removeMemberFromTeam,
+  getTeamRiotStats,
   transferCaptain,
   getTeamWindows, sendScrimRequest, loadIncomingScrimRequests, respondScrimRequest,
   getUserProfile, updateUserProfile, createLadder, loadTeamLadders, loadLadderDetails,
@@ -27,6 +28,7 @@ import {
 } from './storage';
 import { supabase, isSupabaseConfigured } from './supabase';
 import { formatDiscord } from './utils/discord';
+import { notify } from './utils/toast';
 import useDragon from './hooks/useDragon';
 
 /* ─────────────────────────── helpers ─────────────────────────── */
@@ -205,7 +207,7 @@ export default function App() {
       setMyTeamRole('player');
       setJoinRequests([]);
     } catch (err) {
-      alert('Error: ' + err.message);
+      notify('Error: ' + err.message, 'error');
     }
   };
 
@@ -273,7 +275,7 @@ export default function App() {
       setThreshold(data.threshold);
       setShowExport(false);
     } catch (err) {
-      alert('Error al importar: ' + err.message);
+      notify('Error al importar: ' + err.message, 'error');
     }
   };
 
@@ -301,8 +303,14 @@ export default function App() {
 
   if (!loaded) {
     return (
-      <div className="app-container flex items-center justify-center" style={{ minHeight: '100vh' }}>
-        <div className="text-muted mono text-sm">Cargando datos del equipo…</div>
+      <div className="app-container">
+        <div className="skeleton" style={{ height: 72, marginBottom: '1.5rem' }} />
+        <div className="skeleton" style={{ height: 44, marginBottom: '1.5rem' }} />
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '0.75rem', marginBottom: '1.5rem' }}>
+          {[0, 1, 2, 3].map(i => <div key={i} className="skeleton" style={{ height: 90 }} />)}
+        </div>
+        <div className="skeleton" style={{ height: 360 }} />
+        <p className="text-center text-faint mono text-xs mt-4">Invocando los datos del equipo…</p>
       </div>
     );
   }
@@ -455,6 +463,7 @@ export default function App() {
           threshold={threshold}
           comps={comps}
           scrims={scrims}
+          champions={champions}
         />
       )}
       {tab === 'ladder' && (
@@ -2092,7 +2101,70 @@ function StarRating({ value, onChange, readonly = false }) {
    STATS TAB
    ═══════════════════════════════════════════════════════════════════ */
 
-function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
+function StatsTab({ players, cellData, countOf, threshold, comps, scrims, champions }) {
+  const [riot, setRiot] = useState({ profiles: [], games: [], loading: true });
+
+  useEffect(() => {
+    const userIds = players.map(p => p.userId).filter(Boolean);
+    if (userIds.length === 0) { setRiot({ profiles: [], games: [], loading: false }); return; }
+    getTeamRiotStats(userIds)
+      .then(({ profiles, games }) => setRiot({ profiles, games, loading: false }))
+      .catch(() => setRiot({ profiles: [], games: [], loading: false }));
+  }, [players]);
+
+  /* ── Métricas SoloQ del equipo ── */
+  const soloq = useMemo(() => {
+    const { profiles, games } = riot;
+    const byUser = {};
+    for (const g of games) {
+      if (!byUser[g.user_id]) byUser[g.user_id] = [];
+      byUser[g.user_id].push(g);
+    }
+
+    const members = players.map(p => {
+      const prof = profiles.find(u => u.id === p.userId);
+      const userGames = byUser[p.userId] || [];
+      const last5 = userGames.slice(0, 5);
+      let streak = 0;
+      if (userGames.length > 0) {
+        const first = userGames[0].result;
+        for (const g of userGames) { if (g.result === first) streak++; else break; }
+        streak = first === 'win' ? streak : -streak;
+      }
+      return {
+        ...p,
+        summonerName: prof?.summoner_name || '',
+        tier: prof?.current_tier || 'UNRANKED',
+        division: prof?.current_division || '',
+        lp: prof?.current_lp || 0,
+        lpValue: prof?.current_lp_value || 0,
+        last5,
+        streak,
+        gamesCount: userGames.length,
+      };
+    }).sort((a, b) => b.lpValue - a.lpValue);
+
+    const wins = games.filter(g => g.result === 'win').length;
+    const winrate = games.length > 0 ? Math.round((wins / games.length) * 100) : null;
+
+    let k = 0, d = 0, a = 0;
+    for (const g of games) { k += g.kda_kills; d += g.kda_deaths; a += g.kda_assists; }
+    const kda = games.length > 0 ? ((k + a) / Math.max(1, d)).toFixed(2) : null;
+
+    const champCount = {};
+    for (const g of games) champCount[g.champion] = (champCount[g.champion] || 0) + 1;
+    const topChamps = Object.entries(champCount)
+      .sort((x, y) => y[1] - x[1])
+      .slice(0, 6)
+      .map(([champ, count]) => ({
+        champ, count,
+        wins: games.filter(g => g.champion === champ && g.result === 'win').length,
+      }));
+
+    const synced = members.filter(m => m.summonerName).length;
+    return { members, winrate, kda, topChamps, totalGames: games.length, synced };
+  }, [riot, players]);
+
   const stats = useMemo(() => {
     const result = {};
 
@@ -2165,99 +2237,200 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims }) {
     return result;
   }, [players, cellData, countOf, threshold, scrims, comps]);
 
-  // Availability chart data (hours for chart)
-  const chartData = useMemo(() => {
-    return Array.from({ length: NUM_SLOTS }, (_, i) => {
-      let total = 0;
-      for (let d = 0; d < 7; d++) total += countOf(`${d}-${i}`);
-      return { hour: fmt(slotHour(i)), total };
-    });
-  }, [countOf]);
 
-  const maxChart = Math.max(...chartData.map((d) => d.total), 1);
+  const fmtStreak = (s) => s >= 3 ? `🔥 ${s}W` : s <= -3 ? `🧊 ${-s}L` : s > 0 ? `${s}W` : s < 0 ? `${-s}L` : '—';
 
   return (
     <div>
       <h2 className="section-header text-gold mb-4">Estadísticas del Equipo</h2>
 
-      <div className="stats-grid mb-6">
-        <div className="stat-card">
-          <span className="stat-card__label">Horas totales / semana</span>
+      {/* ── Fila hero: disponibilidad ── */}
+      <div className="stat-hero mb-6">
+        <div className="stat-hero__item">
+          <span className="stat-card__label">⏰ Horas / semana</span>
           <span className="stat-card__value">{stats.totalHours}</span>
-          <span className="stat-card__detail">horas marcadas en el equipo</span>
+          <span className="stat-card__detail">marcadas por el equipo</span>
         </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Hora pico</span>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">📈 Hora pico</span>
           <span className="stat-card__value">{stats.peakHour}</span>
-          <span className="stat-card__detail">{stats.peakCount} apariciones en la semana</span>
+          <span className="stat-card__detail">{stats.peakCount} apariciones</span>
         </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Disponibilidad con {threshold}+</span>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">✅ Quórum ({threshold}+)</span>
           <span className="stat-card__value">{stats.overlapRate}%</span>
-          <span className="stat-card__detail">slots con quórum de jugadores</span>
+          <span className="stat-card__detail">de los slots semanales</span>
         </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Mejor día</span>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">🗓️ Mejor día</span>
           <span className="stat-card__value">{stats.bestDay}</span>
-          <span className="stat-card__detail">más horas con {threshold}+ jugadores</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Más disponible</span>
-          <span className="stat-card__value" style={{ fontSize: '1.2rem' }}>
-            {stats.mostAvailable?.name || '—'}
-          </span>
-          <span className="stat-card__detail">
-            {stats.mostAvailable ? `${Object.keys(stats.mostAvailable.avail || {}).length}h marcadas` : ''}
-          </span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Menos disponible</span>
-          <span className="stat-card__value" style={{ fontSize: '1.2rem' }}>
-            {stats.leastAvailable?.name || '—'}
-          </span>
-          <span className="stat-card__detail">
-            {stats.leastAvailable ? `${Object.keys(stats.leastAvailable.avail || {}).length}h marcadas` : ''}
-          </span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Scrims jugados</span>
-          <span className="stat-card__value">{stats.totalScrims}</span>
-          <span className="stat-card__detail">
-            {stats.totalScrims > 0 ? `Azul ${stats.winsAzul}W · Rojo ${stats.winsRojo}W` : 'sin datos'}
-          </span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Rating promedio</span>
-          <span className="stat-card__value">{stats.avgRating}</span>
-          <span className="stat-card__detail">calidad de los scrims</span>
-        </div>
-        <div className="stat-card">
-          <span className="stat-card__label">Comp más usada</span>
-          <span className="stat-card__value" style={{ fontSize: '1rem' }}>{stats.topComp}</span>
+          <span className="stat-card__detail">más horas con quórum</span>
         </div>
       </div>
 
-      {/* ── Availability Chart ── */}
+      {/* ── Equipo en SoloQ ── */}
+      <div className="card mb-6">
+        <div className="card__header">
+          <span className="card__title">🏆 Equipo en SoloQ</span>
+          <span className="chip chip--sm chip--gold">{soloq.synced}/{players.length} sincronizados</span>
+        </div>
+
+        {riot.loading ? (
+          <div className="flex flex-col gap-2">
+            {[0, 1, 2].map(i => <div key={i} className="skeleton" style={{ height: 64 }} />)}
+          </div>
+        ) : soloq.synced === 0 ? (
+          <div className="empty-state">
+            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🎮</div>
+            <p>Nadie ha vinculado su cuenta de Riot todavía.</p>
+            <p className="text-xs mt-1">Ve a la pestaña <strong>Ladder</strong> y registra tu Summoner Name para ver rangos reales, winrate y KDA del equipo.</p>
+          </div>
+        ) : (
+          <>
+            {/* Donuts de equipo */}
+            {soloq.totalGames > 0 && (
+              <div className="flex items-center gap-6 mb-4 flex-wrap justify-center">
+                <div className="donut" style={{ background: `conic-gradient(var(--blue) 0% ${soloq.winrate}%, rgba(148,163,184,0.12) ${soloq.winrate}% 100%)` }}>
+                  <div className="donut__center">
+                    <span className="donut__value">{soloq.winrate}%</span>
+                    <span className="donut__label">Winrate</span>
+                  </div>
+                </div>
+                <div className="donut" style={{ background: `conic-gradient(var(--gold-primary) 0% ${Math.min(100, (parseFloat(soloq.kda) / 5) * 100)}%, rgba(148,163,184,0.12) 0)` }}>
+                  <div className="donut__center">
+                    <span className="donut__value">{soloq.kda}</span>
+                    <span className="donut__label">KDA equipo</span>
+                  </div>
+                </div>
+                <div className="text-center">
+                  <div className="stat-card__value">{soloq.totalGames}</div>
+                  <div className="stat-card__label">partidas registradas</div>
+                </div>
+              </div>
+            )}
+
+            {/* Cards por jugador */}
+            <div className="soloq-grid">
+              {soloq.members.map((m, i) => (
+                <div key={m.id} className="soloq-card" style={{ animationDelay: `${i * 40}ms` }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="soloq-card__name">{ROLE_MAP[m.role]?.icon} {m.name}</span>
+                    {m.gamesCount > 0 && <span className="text-xs text-muted mono">{fmtStreak(m.streak)}</span>}
+                  </div>
+                  <span className={`soloq-card__rank tier-${m.tier}`}>
+                    {m.tier === 'UNRANKED' ? 'Unranked' : `${m.tier} ${['MASTER','GRANDMASTER','CHALLENGER'].includes(m.tier) ? '' : m.division} · ${m.lp} LP`}
+                  </span>
+                  {m.summonerName ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="soloq-card__detail mono">{m.summonerName}</span>
+                      {m.last5.length > 0 && (
+                        <span className="wl-dots">
+                          {m.last5.map((g, gi) => (
+                            <span key={gi} className={`wl-dot wl-dot--${g.result === 'win' ? 'w' : 'l'}`} title={`${g.champion} ${g.kda_kills}/${g.kda_deaths}/${g.kda_assists}`}>
+                              {g.result === 'win' ? 'V' : 'D'}
+                            </span>
+                          ))}
+                        </span>
+                      )}
+                    </div>
+                  ) : (
+                    <span className="soloq-card__detail">Sin cuenta vinculada</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* ── Campeones más jugados (datos reales de Riot) ── */}
+      {soloq.topChamps.length > 0 && (
+        <div className="card mb-6">
+          <div className="card__header">
+            <span className="card__title">⚔️ Campeones más jugados (SoloQ del equipo)</span>
+          </div>
+          <div>
+            {soloq.topChamps.map(c => (
+              <div key={c.champ} className="champ-usage">
+                <ChampionIcon champId={c.champ} champions={champions} size="sm" />
+                <span className="champ-usage__name">{c.champ}</span>
+                <div className="champ-usage__track">
+                  <div className="champ-usage__fill" style={{ width: `${(c.count / soloq.topChamps[0].count) * 100}%` }} />
+                </div>
+                <span className="text-xs text-muted mono" style={{ width: 76, textAlign: 'right', flexShrink: 0 }}>
+                  {c.count} · {Math.round((c.wins / c.count) * 100)}% WR
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── Scrims ── */}
+      <div className="stat-hero mb-6">
+        <div className="stat-hero__item">
+          <span className="stat-card__label">📝 Scrims jugados</span>
+          <span className="stat-card__value">{stats.totalScrims}</span>
+          <span className="stat-card__detail">{stats.totalScrims > 0 ? `Azul ${stats.winsAzul}W · Rojo ${stats.winsRojo}W` : 'sin datos aún'}</span>
+        </div>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">⭐ Rating promedio</span>
+          <span className="stat-card__value">{stats.avgRating}</span>
+          <span className="stat-card__detail">calidad de los scrims</span>
+        </div>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">🛡️ Comp más usada</span>
+          <span className="stat-card__value" style={{ fontSize: '1rem' }}>{stats.topComp}</span>
+          <span className="stat-card__detail">en scrims registrados</span>
+        </div>
+        <div className="stat-hero__item">
+          <span className="stat-card__label">👥 Jugador clave</span>
+          <span className="stat-card__value" style={{ fontSize: '1.2rem' }}>{stats.mostAvailable?.name || '—'}</span>
+          <span className="stat-card__detail">{stats.mostAvailable ? `${Object.keys(stats.mostAvailable.avail || {}).length}h disponibles` : ''}</span>
+        </div>
+      </div>
+
+      {/* ── Heatmap de disponibilidad ── */}
       <div className="card">
         <div className="card__header">
-          <span className="card__title">Disponibilidad por hora (semanal)</span>
+          <span className="card__title">🗓️ Mapa de calor semanal</span>
+          <span className="text-xs text-faint">intensidad = jugadores disponibles</span>
         </div>
-        <div className="bar-chart">
-          {chartData.map((d, i) => (
-            <div key={i} className="bar-row">
-              <span className="bar-row__label">{d.hour}</span>
-              <div className="bar-row__track">
-                <div
-                  className="bar-row__fill bar-row__fill--blue"
-                  style={{ width: `${(d.total / maxChart) * 100}%` }}
-                />
-              </div>
-              <span className="mono text-xs text-faint" style={{ width: 30, fontSize: '0.55rem' }}>
-                {d.total}
-              </span>
-            </div>
-          ))}
-        </div>
+        {stats.totalHours === 0 ? (
+          <div className="empty-state">
+            <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>📅</div>
+            <p>Aún no hay horas marcadas.</p>
+            <p className="text-xs mt-1">Marca tu disponibilidad en la pestaña <strong>Horarios</strong> para ver el mapa de calor del equipo.</p>
+          </div>
+        ) : (
+          <div className="heatmap">
+            <div />
+            {DAYS.map(d => <div key={d} className="heatmap__day">{d}</div>)}
+            {Array.from({ length: NUM_SLOTS }, (_, i) => (
+              <Fragment key={i}>
+                <div className="heatmap__label">{fmt(slotHour(i))}</div>
+                {DAYS.map((_, d) => {
+                  const n = countOf(`${d}-${i}`);
+                  const ratio = Math.min(1, n / Math.max(threshold, 1));
+                  const isQuorum = n >= threshold;
+                  return (
+                    <div
+                      key={`${d}-${i}`}
+                      className="heatmap__cell"
+                      title={`${DAYS[d]} ${fmt(slotHour(i))} — ${n} jugador${n === 1 ? '' : 'es'}`}
+                      style={n > 0 ? {
+                        background: isQuorum
+                          ? `rgba(240, 199, 94, ${0.45 + ratio * 0.4})`
+                          : `rgba(201, 170, 113, ${0.12 + ratio * 0.35})`,
+                        boxShadow: isQuorum ? 'inset 0 0 0 1px rgba(240,199,94,0.6)' : 'none',
+                      } : undefined}
+                    />
+                  );
+                })}
+              </Fragment>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2356,12 +2529,20 @@ function ExportImportModal({ onClose, onExportJSON, onCopyDiscord, onImport }) {
    GLOBAL AUTH SCREEN — Login / Register de cuenta global
    ═══════════════════════════════════════════════════════════════════ */
 
+const AUTH_SPLASHES = ['Jhin', 'Ahri', 'Yasuo', 'Leona', 'Aatrox', 'Jinx', 'Sett'];
+
 function GlobalAuthScreen({ onLogin, onRegister }) {
   const [activeTab, setActiveTab] = useState('login');
   const [name, setName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  // Splash art distinto cada día
+  const splash = useMemo(() => {
+    const dayOfYear = Math.floor(Date.now() / 86400000);
+    return AUTH_SPLASHES[dayOfYear % AUTH_SPLASHES.length];
+  }, []);
 
   const handle = async (e) => {
     e.preventDefault();
@@ -2380,41 +2561,44 @@ function GlobalAuthScreen({ onLogin, onRegister }) {
   };
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '1rem', background: 'var(--bg-deepest)', boxSizing: 'border-box' }}>
-      <div className="card" style={{ maxWidth: 420, width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
+    <div className="auth-screen">
+      <div
+        className="auth-screen__bg"
+        style={{ backgroundImage: `url(https://ddragon.leagueoflegends.com/cdn/img/champion/splash/${splash}_0.jpg)` }}
+      />
+      <div className="auth-card">
         <div className="text-center mb-6">
+          <div className="auth-card__crest">⚔️</div>
           <div className="mono text-xs uppercase font-bold mb-1" style={{ letterSpacing: '0.25em', color: 'var(--gold-primary)' }}>League Planner</div>
           <h1 className="font-bold text-2xl mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>Acceso de Invocador</h1>
-          <p className="text-xs text-muted">Crea una cuenta o inicia sesión para acceder a tu equipo.</p>
+          <p className="text-xs text-muted">Coordina horarios, comps, scrims y ladders con tu equipo.</p>
         </div>
 
-        <div style={{ display: 'flex', marginBottom: '1.25rem' }}>
+        <div className="seg-tabs mb-5">
           {[['login', 'Iniciar Sesión'], ['register', 'Crear Cuenta']].map(([id, label]) => (
             <button key={id}
-              style={activeTab === id
-                ? { flex: 1, padding: '0.5rem', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700, border: 'none', cursor: 'pointer', borderRadius: id === 'login' ? '6px 0 0 6px' : '0 6px 6px 0', fontSize: '0.85rem' }
-                : { flex: 1, padding: '0.5rem', background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'pointer', borderRadius: id === 'login' ? '6px 0 0 6px' : '0 6px 6px 0', fontSize: '0.85rem' }}
+              className={`seg-tabs__btn ${activeTab === id ? 'seg-tabs__btn--active' : ''}`}
               onClick={() => { setActiveTab(id); setError(''); }}
             >{label}</button>
           ))}
         </div>
 
         <form onSubmit={handle} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-            <label className="text-xs text-faint">Nombre de Invocador</label>
-            <input className="input w-full" value={name} onChange={e => { setName(e.target.value); setError(''); }}
+          <div className="form-group">
+            <label className="form-label">Nombre de Invocador</label>
+            <input className="form-input" value={name} onChange={e => { setName(e.target.value); setError(''); }}
               placeholder="Ej: Faker" autoComplete="username" />
           </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-            <label className="text-xs text-faint">Contraseña / PIN</label>
-            <input type="password" className="input w-full" value={password}
+          <div className="form-group">
+            <label className="form-label">Contraseña / PIN</label>
+            <input type="password" className="form-input" value={password}
               onChange={e => { setPassword(e.target.value); setError(''); }}
               placeholder="Mínimo 3 caracteres…"
               autoComplete={activeTab === 'login' ? 'current-password' : 'new-password'} />
           </div>
           {error && <p className="text-xs" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
-          <button className="btn btn--gold w-full" type="submit" disabled={loading}>
-            {loading ? 'Procesando…' : activeTab === 'login' ? 'Entrar' : 'Crear Cuenta'}
+          <button className="btn btn--gold w-full" type="submit" disabled={loading} style={{ padding: '0.6rem' }}>
+            {loading ? 'Procesando…' : activeTab === 'login' ? 'Entrar a la Grieta' : 'Crear Cuenta'}
           </button>
         </form>
       </div>
@@ -2488,31 +2672,30 @@ function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onC
     }
   };
 
-  const statusColor = { pending: 'var(--gold-primary)', accepted: 'var(--green-text)', rejected: 'var(--red-text)' };
+  const statusColor = { pending: 'var(--gold-primary)', accepted: 'var(--green)', rejected: 'var(--red-text)' };
   const statusLabel = { pending: '⏳ Pendiente', accepted: '✓ Aceptado', rejected: '✕ Rechazado' };
-  const sectionBtnStyle = (id) => activeSection === id
-    ? { flex: 1, padding: '0.4rem 0.5rem', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700, border: 'none', cursor: 'pointer', fontSize: '0.75rem' }
-    : { flex: 1, padding: '0.4rem 0.5rem', background: 'var(--bg-surface)', color: 'var(--text-muted)', border: '1px solid var(--border)', cursor: 'pointer', fontSize: '0.75rem' };
+  const crestOf = (name) => (name || '?').trim().slice(0, 2).toUpperCase();
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', padding: '1rem', background: 'var(--bg-deepest)', boxSizing: 'border-box' }}>
-      <div className="card" style={{ maxWidth: 560, width: '100%', padding: '2rem', border: '1px solid var(--border-gold)', boxShadow: 'var(--shadow-gold)', background: 'var(--bg-secondary)' }}>
+    <div className="auth-screen">
+      <div className="auth-card auth-card--wide">
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+        <div className="flex items-center justify-between mb-5">
           <div>
             <div className="mono text-xs uppercase font-bold" style={{ letterSpacing: '0.2em', color: 'var(--gold-primary)' }}>League Planner</div>
             <h2 className="font-bold text-xl" style={{ fontFamily: 'var(--font-display)', color: 'var(--text-primary)' }}>
               Bienvenido, {currentUserName}
             </h2>
           </div>
-          <button onClick={onLogout} style={{ background: 'none', border: '1px solid var(--border)', borderRadius: '6px', padding: '0.3rem 0.7rem', color: 'var(--text-muted)', cursor: 'pointer', fontSize: '0.75rem' }}>
+          <button className="btn btn--outline btn--sm" onClick={onLogout}>
             Cerrar sesión
           </button>
         </div>
 
-        <div style={{ display: 'flex', marginBottom: '1.25rem' }}>
-          {[['mine', 'Mis Equipos'], ['search', 'Buscar'], ['create', 'Crear']].map(([id, label], i, arr) => (
-            <button key={id} style={{ ...sectionBtnStyle(id), borderRadius: i === 0 ? '6px 0 0 6px' : i === arr.length - 1 ? '0 6px 6px 0' : '0' }}
+        <div className="seg-tabs mb-5">
+          {[['mine', '🏠 Mis Equipos'], ['search', '🔍 Buscar'], ['create', '✨ Crear']].map(([id, label]) => (
+            <button key={id}
+              className={`seg-tabs__btn ${activeSection === id ? 'seg-tabs__btn--active' : ''}`}
               onClick={() => { setActiveSection(id); setError(''); setSelectedTeam(null); }}>
               {label}
             </button>
@@ -2522,37 +2705,38 @@ function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onC
         {error && <p className="text-xs mb-3" style={{ color: 'var(--red-bright)' }}>⚠ {error}</p>}
 
         {activeSection === 'mine' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div className="flex flex-col gap-3">
             {myTeams.length === 0 ? (
-              <p className="text-sm text-muted text-center" style={{ padding: '1rem 0' }}>No estás en ningún equipo todavía.</p>
-            ) : myTeams.map(t => (
-              <div key={t.teamId} style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)', cursor: 'pointer' }}
+              <div className="empty-state">
+                <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>🛡️</div>
+                <p>No estás en ningún equipo todavía.</p>
+                <button className="btn btn--gold btn--sm mt-3" onClick={() => setActiveSection('search')}>
+                  Buscar un equipo
+                </button>
+              </div>
+            ) : myTeams.map((t, i) => (
+              <div key={t.teamId} className="team-row" style={{ animationDelay: `${i * 50}ms` }}
                 onClick={() => onSelectTeam(t.teamId, t.teamName, t.teamRole)}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t.teamName}</span>
-                    <span className="text-xs text-muted" style={{ marginLeft: '0.5rem' }}>
-                      · {ROLE_MAP[t.gameRole]?.icon} {ROLE_MAP[t.gameRole]?.name || t.gameRole}
-                    </span>
+                <div className="team-row__crest">{crestOf(t.teamName)}</div>
+                <div className="team-row__info">
+                  <div className="team-row__name">{t.teamName}</div>
+                  <div className="team-row__meta">
+                    {ROLE_MAP[t.gameRole]?.icon} {ROLE_MAP[t.gameRole]?.name || t.gameRole}
                   </div>
-                  <span style={t.teamRole === 'captain'
-                    ? { fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '999px', background: 'var(--gold-primary)', color: '#0b1220', fontWeight: 700 }
-                    : { fontSize: '0.75rem', padding: '0.15rem 0.5rem', borderRadius: '999px', background: 'var(--bg-panel)', color: 'var(--text-muted)', border: '1px solid var(--border)' }}>
-                    {t.teamRole === 'captain' ? '👑 Capitán' : t.teamRole}
-                  </span>
                 </div>
+                <span className={`role-pill ${t.teamRole === 'captain' ? 'role-pill--captain' : ''}`}>
+                  {t.teamRole === 'captain' ? '👑 Capitán' : t.teamRole}
+                </span>
               </div>
             ))}
 
             {pendingRequests.length > 0 && (
-              <div style={{ marginTop: '1rem' }}>
-                <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', fontWeight: 700, marginBottom: '0.5rem', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                  Solicitudes enviadas
-                </div>
+              <div className="mt-3">
+                <div className="section-header text-muted">Solicitudes enviadas</div>
                 {pendingRequests.map(r => (
-                  <div key={r.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
-                    <span style={{ fontSize: '0.875rem' }}>{r.teamName}</span>
-                    <span style={{ fontSize: '0.75rem', fontWeight: 600, color: statusColor[r.status] || 'var(--text-muted)' }}>
+                  <div key={r.id} className="flex items-center justify-between" style={{ padding: '0.5rem 0', borderBottom: '1px solid var(--border)' }}>
+                    <span className="text-sm">{r.teamName}</span>
+                    <span className="text-xs font-semibold" style={{ color: statusColor[r.status] || 'var(--text-muted)' }}>
                       {statusLabel[r.status] || r.status}
                     </span>
                   </div>
@@ -2563,41 +2747,42 @@ function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onC
         )}
 
         {activeSection === 'search' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-            <input className="input w-full" placeholder="Buscar por nombre de equipo…"
-              value={searchQuery} onChange={e => doSearch(e.target.value)} />
+          <div className="flex flex-col gap-3">
+            <input className="form-input" placeholder="🔍 Buscar por nombre de equipo…"
+              value={searchQuery} onChange={e => doSearch(e.target.value)} autoFocus />
             {searchResults.length === 0 && searchQuery.trim() && (
-              <p className="text-sm text-muted text-center">Sin resultados para "{searchQuery}".</p>
+              <p className="text-sm text-muted text-center" style={{ padding: '1rem 0' }}>Sin resultados para "{searchQuery}".</p>
             )}
-            {searchResults.map(t => (
-              <div key={t.id} style={{ padding: '0.75rem 1rem', borderRadius: '8px', background: 'var(--bg-surface)', border: '1px solid var(--border)' }}>
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                  <div>
-                    <span style={{ color: 'var(--text-primary)', fontWeight: 600 }}>{t.name}</span>
-                    <span className="text-xs text-muted" style={{ marginLeft: '0.5rem' }}>· {t.memberCount} miembro{t.memberCount === 1 ? '' : 's'}</span>
+            {searchResults.map((t, i) => (
+              <div key={t.id} style={{ animationDelay: `${i * 40}ms` }} className="card">
+                <div className="flex items-center gap-3">
+                  <div className="team-row__crest">{crestOf(t.name)}</div>
+                  <div className="team-row__info">
+                    <div className="team-row__name">{t.name}</div>
+                    <div className="team-row__meta">{t.memberCount} miembro{t.memberCount === 1 ? '' : 's'}</div>
                   </div>
                   <button className="btn btn--gold btn--sm"
                     onClick={() => setSelectedTeam(selectedTeam?.id === t.id ? null : t)}
                     disabled={pendingRequests.some(r => r.teamId === t.id && r.status === 'pending')}>
-                    {pendingRequests.some(r => r.teamId === t.id && r.status === 'pending') ? 'Enviada' : selectedTeam?.id === t.id ? 'Cancelar' : 'Unirse'}
+                    {pendingRequests.some(r => r.teamId === t.id && r.status === 'pending') ? '✓ Enviada' : selectedTeam?.id === t.id ? 'Cancelar' : 'Unirse'}
                   </button>
                 </div>
                 {selectedTeam?.id === t.id && (
-                  <form onSubmit={handleJoinRequest} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                      <label className="text-xs text-faint">Tu rol en juego</label>
-                      <select className="input" value={joinGameRole} onChange={e => setJoinGameRole(e.target.value)}>
+                  <form onSubmit={handleJoinRequest} className="flex flex-col gap-3" style={{ marginTop: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border)' }}>
+                    <div className="form-group">
+                      <label className="form-label">Tu rol en juego</label>
+                      <select className="form-input" value={joinGameRole} onChange={e => setJoinGameRole(e.target.value)}>
                         {ROLES.map(r => <option key={r.id} value={r.id}>{r.icon} {r.name}</option>)}
                       </select>
                     </div>
-                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
-                      <label className="text-xs text-faint">Mensaje (opcional)</label>
-                      <input className="input w-full" value={joinMessage} onChange={e => setJoinMessage(e.target.value)}
+                    <div className="form-group">
+                      <label className="form-label">Mensaje para el capitán (opcional)</label>
+                      <input className="form-input" value={joinMessage} onChange={e => setJoinMessage(e.target.value)}
                         placeholder="¿Por qué quieres unirte?" />
                     </div>
-                    <div style={{ display: 'flex', gap: '0.5rem' }}>
+                    <div className="flex gap-2">
                       <button className="btn btn--gold btn--sm" type="submit" disabled={loading}>
-                        {loading ? 'Enviando…' : 'Enviar Solicitud'}
+                        {loading ? 'Enviando…' : '📨 Enviar Solicitud'}
                       </button>
                       <button className="btn btn--ghost btn--sm" type="button" onClick={() => setSelectedTeam(null)}>Cancelar</button>
                     </div>
@@ -2609,21 +2794,21 @@ function TeamDirectoryScreen({ currentUserId, currentUserName, onSelectTeam, onC
         )}
 
         {activeSection === 'create' && (
-          <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <label className="text-xs text-faint">Nombre del equipo</label>
-              <input className="input w-full" value={createName}
+          <form onSubmit={handleCreate} className="flex flex-col gap-4">
+            <div className="form-group">
+              <label className="form-label">Nombre del equipo</label>
+              <input className="form-input" value={createName}
                 onChange={e => { setCreateName(e.target.value); setError(''); }}
-                placeholder="Ej: Team Invictus" />
+                placeholder="Ej: Team Invictus" autoFocus />
             </div>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-              <label className="text-xs text-faint">Tu rol en juego (como capitán)</label>
-              <select className="input w-full" value={createRole} onChange={e => setCreateRole(e.target.value)}>
+            <div className="form-group">
+              <label className="form-label">Tu rol en juego (como capitán)</label>
+              <select className="form-input" value={createRole} onChange={e => setCreateRole(e.target.value)}>
                 {ROLES.map(r => <option key={r.id} value={r.id}>{r.icon} {r.name}</option>)}
               </select>
             </div>
-            <p className="text-xs text-muted">Serás el capitán. Podrás aceptar solicitudes de otros jugadores.</p>
-            <button className="btn btn--gold w-full" type="submit" disabled={loading}>
+            <p className="text-xs text-muted">Serás el capitán: aceptarás solicitudes, gestionarás el roster y podrás transferir el cargo más adelante.</p>
+            <button className="btn btn--gold w-full" type="submit" disabled={loading} style={{ padding: '0.6rem' }}>
               {loading ? 'Creando…' : '👑 Crear Equipo'}
             </button>
           </form>
@@ -2681,7 +2866,7 @@ function ScrimMatchmaker({ teamCode, teamName, myWindows, scrimRequests, setScri
     try {
       await sendScrimRequest(teamCode, selectedTeam.id, selectedWindow.day, selectedWindow.start, selectedWindow.end - selectedWindow.start + 1, message);
       setSelectedTeam(null); setSelectedWindow(null); setMessage('');
-      alert('Solicitud enviada correctamente.');
+      notify('Solicitud de scrim enviada.', 'success');
     } catch (err) {
       setError(err.message);
     } finally {
@@ -3105,15 +3290,15 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
         await fetchLadderDetails();
       }
       setShowProfileModal(false);
-      alert('Perfil de Invocador actualizado correctamente.');
+      notify('Perfil de invocador actualizado.', 'success');
     } catch (err) {
-      alert('Error al actualizar perfil: ' + err.message);
+      notify('Error al actualizar perfil: ' + err.message, 'error');
     }
   };
 
   const handleSyncGames = async () => {
     if (!profile?.summoner_name) {
-      alert('Primero debes registrar tu Summoner Name en tu perfil para actualizar tus puntos.');
+      notify('Primero registra tu Summoner Name en tu perfil.', 'info');
       setShowProfileModal(true);
       return;
     }
@@ -3141,11 +3326,11 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
           setSyncing(false);
           setSyncStatus('');
           if (result.gamesAdded === 0 && result.status) {
-            alert(result.status);
+            notify(result.status, 'success');
           }
         }, 1200);
       } catch (err) {
-        alert('Error al actualizar puntos: ' + err.message);
+        notify('Error al actualizar puntos: ' + err.message, 'error');
         setSyncing(false);
         setSyncStatus('');
       }
@@ -3155,7 +3340,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
   const handleCreateLadder = async (e) => {
     e.preventDefault();
     if (!newLadderEndDate) {
-      alert('Debes seleccionar una fecha de finalización.');
+      notify('Debes seleccionar una fecha de finalización.', 'error');
       return;
     }
     try {
@@ -3166,9 +3351,9 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
       setShowCreateModal(false);
       setNewLadderName('');
       setNewLadderEndDate('');
-      alert('Ladder creado con éxito.');
+      notify('Ladder creado con éxito.', 'success');
     } catch (err) {
-      alert('Error al crear ladder: ' + err.message);
+      notify('Error al crear ladder: ' + err.message, 'error');
     }
   };
 
@@ -3191,12 +3376,12 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
     if (!selectedLadderId) return;
     try {
       await sendLadderInvite(selectedLadderId, teamCode, toTeamId);
-      alert('Invitación enviada con éxito.');
+      notify('Invitación enviada con éxito.', 'success');
       setShowInviteModal(false);
       setSearchQuery('');
       setSearchResults([]);
     } catch (err) {
-      alert(err.message);
+      notify(err.message, 'error');
     }
   };
 
@@ -3206,9 +3391,9 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
     try {
       await respondLadderInvite(inviteId, accept);
       await fetchLadders();
-      alert(`Invitación ${accept ? 'aceptada' : 'rechazada'} correctamente.`);
+      notify(`Invitación ${accept ? 'aceptada' : 'rechazada'} correctamente.`, 'success');
     } catch (err) {
-      alert('Error: ' + err.message);
+      notify('Error: ' + err.message, 'error');
     }
   };
 
@@ -3588,7 +3773,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
               <h3 className="modal__title text-gold uppercase">Configurar Mi Invocador</h3>
               <button 
                 onClick={() => setShowProfileModal(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+                className="modal__close"
               >
                 &times;
               </button>
@@ -3648,7 +3833,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
               <h3 className="modal__title text-gold uppercase">Crear Ranked Ladder</h3>
               <button 
                 onClick={() => setShowCreateModal(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+                className="modal__close"
               >
                 &times;
               </button>
@@ -3724,7 +3909,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
               <h3 className="modal__title text-gold uppercase">Invitar Equipo al Ladder</h3>
               <button 
                 onClick={() => setShowInviteModal(false)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-secondary)', cursor: 'pointer', fontSize: '1.2rem' }}
+                className="modal__close"
               >
                 &times;
               </button>

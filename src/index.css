@@ -8,6 +8,10 @@
 
 /* ---------- Custom Properties ---------- */
 :root {
+  /* Los controles nativos (date picker, dropdowns de select, scrollbars)
+     se renderizan en oscuro en vez del blanco por defecto del navegador */
+  color-scheme: dark;
+
   /* Background layers */
   --bg-deepest: #060a10;
   --bg-primary: #0a0e14;
@@ -277,6 +281,10 @@ h3 { font-size: 1rem; font-weight: 500; }
   line-height: 1.4;
 }
 
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.55; cursor: not-allowed; }
+.btn:disabled:active { transform: none; }
+
 .btn--gold {
   background: var(--gold-primary);
   color: var(--bg-deepest);
@@ -286,6 +294,33 @@ h3 { font-size: 1rem; font-weight: 500; }
   background: var(--gold-bright);
   border-color: var(--gold-bright);
   box-shadow: 0 0 12px rgba(201, 170, 113, 0.3);
+  transform: translateY(-1px);
+}
+.btn--gold:active { transform: scale(0.97); }
+
+/* Alias usados por la Fase 3 (Ladder) */
+.btn--primary {
+  background: var(--gold-primary);
+  color: var(--bg-deepest);
+  border-color: var(--gold-primary);
+}
+.btn--primary:hover {
+  background: var(--gold-bright);
+  border-color: var(--gold-bright);
+  box-shadow: 0 0 12px rgba(201, 170, 113, 0.3);
+  transform: translateY(-1px);
+}
+.btn--primary:active { transform: scale(0.97); }
+
+.btn--secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border-color: var(--border);
+}
+.btn--secondary:hover {
+  border-color: var(--text-muted);
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .btn--outline {
@@ -343,9 +378,23 @@ h3 { font-size: 1rem; font-weight: 500; }
 }
 
 .input::placeholder { color: var(--text-faint); }
-.input:focus { border-color: var(--gold-primary); }
+.input:focus {
+  border-color: var(--gold-primary);
+  box-shadow: 0 0 0 3px rgba(201, 170, 113, 0.12);
+}
 
 .input--rect { border-radius: var(--radius-md); }
+
+/* Selects con la clase .input: flecha custom dorada en vez de la nativa */
+select.input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23c9aa71' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.75rem center;
+  cursor: pointer;
+}
 
 .textarea {
   background: var(--bg-primary);
@@ -1053,7 +1102,8 @@ h3 { font-size: 1rem; font-weight: 500; }
 }
 
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(16px) scale(0.97); } to { opacity: 1; transform: translateY(0) scale(1); } }
+@keyframes popIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
 
 /* ---------- Champion Pool ---------- */
 .pool-section {
@@ -1660,3 +1710,580 @@ h3 { font-size: 1rem; font-weight: 500; }
 }
 
 
+/* ========================================================================
+   Formularios (clases usadas por la Fase 3) y micro-animaciones
+   ======================================================================== */
+
+/* ---------- Form groups: label arriba, input abajo, espaciado uniforme ---------- */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.form-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+.form-input {
+  width: 100%;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.55rem 0.875rem;
+  font-family: var(--font-body);
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  outline: none;
+  transition: border-color var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
+}
+
+.form-input::placeholder { color: var(--text-faint); }
+
+.form-input:hover { border-color: rgba(148, 163, 184, 0.25); }
+
+.form-input:focus {
+  border-color: var(--gold-primary);
+  box-shadow: 0 0 0 3px rgba(201, 170, 113, 0.12);
+}
+
+/* Selects: quitar apariencia nativa, flecha dorada custom */
+select.form-input {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 2.25rem;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23c9aa71' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.875rem center;
+  cursor: pointer;
+}
+
+select.form-input option,
+select.input option {
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+}
+
+/* Date inputs: ícono de calendario tintado a dorado */
+input[type="date"].form-input,
+input[type="date"].input {
+  cursor: pointer;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.75) sepia(0.4) saturate(2) hue-rotate(5deg);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity var(--duration) var(--ease);
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+
+/* ---------- Animaciones de entrada ---------- */
+
+/* Las cards aparecen con un fundido sutil al montar (cambio de pestaña, nuevos items) */
+.card,
+.window-card,
+.comp-card,
+.scrim-card,
+.stat-card,
+.game-history-card {
+  animation: cardIn 220ms var(--ease) backwards;
+}
+
+@keyframes cardIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Modal: overlay con blur progresivo + contenido con pop */
+.modal-overlay {
+  animation: overlayIn 180ms var(--ease);
+}
+
+@keyframes overlayIn {
+  from { opacity: 0; backdrop-filter: blur(0px); }
+  to   { opacity: 1; backdrop-filter: blur(8px); }
+}
+
+/* Dropdown del buscador de campeones */
+.champion-search__dropdown {
+  animation: popIn 140ms var(--ease);
+  transform-origin: top center;
+}
+
+/* Botón de cerrar modal (la X) */
+.modal__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  background: none;
+  border: none;
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+  font-size: 1.1rem;
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.modal__close:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  transform: rotate(90deg);
+}
+
+/* Tabla del ladder: las filas entran escalonadas */
+.ladder-row-tr {
+  animation: cardIn 200ms var(--ease) backwards;
+}
+
+.ladder-row-tr:nth-child(1) { animation-delay: 0ms; }
+.ladder-row-tr:nth-child(2) { animation-delay: 30ms; }
+.ladder-row-tr:nth-child(3) { animation-delay: 60ms; }
+.ladder-row-tr:nth-child(4) { animation-delay: 90ms; }
+.ladder-row-tr:nth-child(5) { animation-delay: 120ms; }
+.ladder-row-tr:nth-child(6) { animation-delay: 150ms; }
+.ladder-row-tr:nth-child(n+7) { animation-delay: 180ms; }
+
+/* ---------- Accesibilidad: respetar reduced motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ========================================================================
+   Rediseño A+B: Auth, Directorio, Toasts, Skeletons, Stats con Riot
+   ======================================================================== */
+
+/* ---------- Pantalla de Auth con splash art ---------- */
+.auth-screen {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 1rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--bg-deepest);
+}
+
+.auth-screen__bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center 20%;
+  opacity: 0;
+  animation: authBgIn 1.2s var(--ease) 0.1s forwards;
+}
+
+@keyframes authBgIn { to { opacity: 0.35; } }
+
+.auth-screen__bg::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(180deg, rgba(6,10,16,0.55) 0%, rgba(6,10,16,0.75) 60%, var(--bg-deepest) 100%),
+    radial-gradient(ellipse at center, transparent 30%, rgba(6,10,16,0.6) 100%);
+}
+
+.auth-card {
+  position: relative;
+  z-index: 1;
+  max-width: 420px;
+  width: 100%;
+  padding: 2.25rem 2rem;
+  background: rgba(17, 24, 39, 0.78);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border-gold);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg), 0 0 60px rgba(201, 170, 113, 0.08);
+  animation: slideUp 350ms var(--ease);
+}
+
+.auth-card--wide { max-width: 560px; }
+
+.auth-card__crest {
+  width: 64px;
+  height: 64px;
+  margin: 0 auto 0.75rem;
+  border-radius: var(--radius-full);
+  background: linear-gradient(135deg, var(--gold-dark), var(--gold-primary));
+  border: 2px solid var(--gold-bright);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.75rem;
+  box-shadow: 0 0 24px var(--gold-glow);
+}
+
+/* Tabs segmentados (login/registro, secciones del directorio) */
+.seg-tabs {
+  display: flex;
+  background: var(--bg-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 3px;
+  gap: 2px;
+}
+
+.seg-tabs__btn {
+  flex: 1;
+  padding: 0.45rem 0.5rem;
+  font-family: var(--font-body);
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-md) - 2px);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+  white-space: nowrap;
+}
+
+.seg-tabs__btn:hover { color: var(--text-secondary); background: var(--bg-hover); }
+
+.seg-tabs__btn--active {
+  background: var(--gold-primary);
+  color: var(--bg-deepest);
+  font-weight: 600;
+}
+
+/* ---------- Directorio de equipos ---------- */
+.team-row {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 0.875rem 1rem;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+  animation: cardIn 220ms var(--ease) backwards;
+}
+
+.team-row:hover {
+  border-color: var(--border-gold);
+  background: var(--bg-elevated);
+  transform: translateX(3px);
+}
+
+.team-row__crest {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--bg-deepest);
+  background: linear-gradient(135deg, var(--gold-dark), var(--gold-primary));
+}
+
+.team-row__info { flex: 1; min-width: 0; }
+
+.team-row__name {
+  font-weight: 600;
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-row__meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+}
+
+.role-pill {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-full);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.role-pill--captain {
+  background: var(--gold-primary);
+  color: var(--bg-deepest);
+  border-color: var(--gold-primary);
+}
+
+/* ---------- Toasts ---------- */
+.toast-container {
+  position: fixed;
+  bottom: 1.25rem;
+  right: 1.25rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, calc(100vw - 2rem));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.75rem 1rem;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--gold-primary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  animation: toastIn 250ms var(--ease);
+}
+
+.toast--success { border-left-color: var(--green); }
+.toast--error   { border-left-color: var(--red); }
+.toast--info    { border-left-color: var(--blue); }
+
+.toast--leaving { animation: toastOut 220ms var(--ease) forwards; }
+
+@keyframes toastIn  { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes toastOut { from { opacity: 1; transform: translateX(0); } to { opacity: 0; transform: translateX(24px); } }
+
+/* ---------- Skeletons ---------- */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-surface);
+  border-radius: var(--radius-md);
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(148, 163, 184, 0.08), transparent);
+  animation: shimmer 1.4s infinite;
+}
+
+@keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+
+/* ---------- Colores de tier (Riot) ---------- */
+.tier-IRON        { color: #8e8a86; }
+.tier-BRONZE      { color: #b08d6f; }
+.tier-SILVER      { color: #aab4be; }
+.tier-GOLD        { color: #e8b865; }
+.tier-PLATINUM    { color: #4fc3b1; }
+.tier-EMERALD     { color: #3eb877; }
+.tier-DIAMOND     { color: #6e8df7; }
+.tier-MASTER      { color: #c084fc; }
+.tier-GRANDMASTER { color: #ef4444; }
+.tier-CHALLENGER  { color: #f0c75e; }
+.tier-UNRANKED    { color: var(--text-faint); }
+
+/* ---------- Stats: tarjetas de jugador SoloQ ---------- */
+.soloq-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.75rem;
+}
+
+.soloq-card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.875rem 1rem;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  animation: cardIn 220ms var(--ease) backwards;
+}
+
+.soloq-card__name {
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.soloq-card__rank {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.soloq-card__detail {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* ---------- Donut chart (conic-gradient) ---------- */
+.donut {
+  position: relative;
+  width: 110px;
+  height: 110px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.donut::after {
+  content: '';
+  position: absolute;
+  inset: 12px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+}
+
+.donut__center {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.donut__value {
+  font-family: var(--font-display);
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+
+.donut__label {
+  font-size: 0.58rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+}
+
+/* ---------- Heatmap de disponibilidad ---------- */
+.heatmap {
+  display: grid;
+  grid-template-columns: 44px repeat(7, minmax(0, 1fr));
+  gap: 2px;
+}
+
+.heatmap__label {
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 0.4rem;
+}
+
+.heatmap__day {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  text-align: center;
+  padding-bottom: 0.25rem;
+}
+
+.heatmap__cell {
+  height: 18px;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.05);
+  transition: transform 80ms var(--ease);
+}
+
+.heatmap__cell:hover { transform: scale(1.15); z-index: 1; }
+
+/* ---------- Champ usage bar ---------- */
+.champ-usage {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.35rem 0;
+}
+
+.champ-usage__name {
+  font-size: 0.8rem;
+  color: var(--text-primary);
+  width: 110px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 0;
+}
+
+.champ-usage__track {
+  flex: 1;
+  height: 8px;
+  background: var(--bg-primary);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.champ-usage__fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold-dark), var(--gold-primary));
+  border-radius: var(--radius-full);
+  transition: width 0.5s var(--ease);
+}
+
+/* ---------- Win/Loss dots (últimas partidas) ---------- */
+.wl-dots { display: inline-flex; gap: 3px; }
+
+.wl-dot {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.5rem;
+  font-weight: 800;
+}
+
+.wl-dot--w { background: rgba(59, 130, 246, 0.25); color: var(--blue-bright); border: 1px solid var(--blue-border); }
+.wl-dot--l { background: rgba(239, 68, 68, 0.2); color: var(--red-bright); border: 1px solid var(--red-border); }
+
+/* ---------- Stat hero (fila compacta superior) ---------- */
+.stat-hero {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+}
+
+.stat-hero__item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.875rem 1rem;
+  background: linear-gradient(160deg, var(--bg-secondary), var(--bg-primary));
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  animation: cardIn 220ms var(--ease) backwards;
+}
+
+.stat-hero__item:nth-child(2) { animation-delay: 40ms; }
+.stat-hero__item:nth-child(3) { animation-delay: 80ms; }
+.stat-hero__item:nth-child(4) { animation-delay: 120ms; }
+
+@media (max-width: 480px) {
+  .auth-card { padding: 1.5rem 1.25rem; }
+  .donut { width: 92px; height: 92px; }
+}

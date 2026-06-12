@@ -890,21 +890,35 @@ export function getRegionFromSummonerName(summonerName) {
 }
 
 async function fetchRiotApi(url, apiKey) {
-  const proxiedUrl = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-  const res = await fetch(proxiedUrl);
-  if (!res.ok) {
-    if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
-    if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
-    throw new Error(`Error de conexión con la API de Riot (HTTP ${res.status})`);
+  const proxies = [
+    `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+  ];
+
+  let lastErr = null;
+  for (const proxiedUrl of proxies) {
+    try {
+      const res = await fetch(proxiedUrl);
+      if (!res.ok) {
+        if (res.status === 403) throw new Error('Riot API Key inválida o expirada.');
+        if (res.status === 404) throw new Error('Invocador o datos no encontrados.');
+        throw new Error(`HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      if (data && data.status && data.status.status_code >= 400) {
+        const code = data.status.status_code;
+        if (code === 403) throw new Error('Riot API Key inválida o expirada.');
+        if (code === 404) throw new Error('Invocador o datos no encontrados.');
+        throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
+      }
+      return data;
+    } catch (err) {
+      console.warn(`Error al conectar mediante ${proxiedUrl}, intentando el siguiente proxy...`, err);
+      lastErr = err;
+    }
   }
-  const data = await res.json();
-  if (data && data.status && data.status.status_code >= 400) {
-    const code = data.status.status_code;
-    if (code === 403) throw new Error('Riot API Key inválida o expirada.');
-    if (code === 404) throw new Error('Invocador o datos no encontrados.');
-    throw new Error(`Riot API Error: ${data.status.message} (Código ${code})`);
-  }
-  return data;
+
+  throw new Error(`Error de conexión con la API de Riot: ${lastErr ? lastErr.message : 'Fallo en todos los proxies CORS'}`);
 }
 
 export async function fetchRealApexCutoffs(region, apiKey) {

@@ -1511,17 +1511,17 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     const matchesUrl = `https://${routing}.api.riotgames.com/lol/match/v5/matches/by-puuid/${puuid}/ids?start=0&count=5&queue=420`;
     const matchIds = await fetchRiotApi(matchesUrl);
 
-    // Obtener los IDs de las partidas que ya tenemos en la base de datos para no duplicar
+    // Obtener los IDs de las partidas que ya tenemos en la base de datos para no duplicar.
+    // Usamos el formato compuesto userId_matchId.
     const { data: existingGames } = await supabase
       .from('summoner_games')
       .select('id')
       .eq('user_id', userId);
     const existingIds = (existingGames || []).map(g => g.id);
 
-    // Filtrar partidas nuevas
-    const newMatchIds = matchIds.filter(id => !existingIds.includes(id));
+    // Filtrar partidas nuevas buscando en los IDs compuestos
+    const newMatchIds = matchIds.filter(id => !existingIds.includes(`${userId}_${id}`));
 
-    // Obtener todos los usuarios con summoner name para buscar enfrentamientos directos en la DB
     const { data: allUsers } = await supabase
       .from('users')
       .select('id, name, summoner_name')
@@ -1592,7 +1592,7 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
       }
 
       newGames.push({
-        id: matchId,
+        id: `${userId}_${matchId}`,
         user_id: userId,
         champion: meParticipant.championName,
         role: meParticipant.teamPosition ? meParticipant.teamPosition.toLowerCase() : 'mid',

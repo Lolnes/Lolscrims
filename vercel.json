@@ -7,11 +7,5 @@
     "api/**/*.js": {
       "runtime": "nodejs18.x"
     }
-  },
-  "crons": [
-    {
-      "path": "/api/sync-all",
-      "schedule": "0 */12 * * *"
-    }
-  ]
+  }
 }

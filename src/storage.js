@@ -940,7 +940,8 @@ export function getRiotRegionsFromTag(tag) {
   if (t === 'NA' || t === 'NA1') return { region: 'na1', routing: 'americas' };
   if (t === 'LAS' || t === 'LA2') return { region: 'la2', routing: 'americas' };
   if (t === 'BR' || t === 'BR1') return { region: 'br1', routing: 'americas' };
-  return { region: 'la1', routing: 'americas' };
+  // Fallback por defecto: LAS (la2) ya que es el servidor principal del equipo
+  return { region: 'la2', routing: 'americas' };
 }
 
 export function getRegionFromSummonerName(summonerName) {
@@ -1279,15 +1280,25 @@ export async function loadLadderDetails(ladderId) {
 
   const mappedParticipants = (participants || []).map(p => {
     const rank = lpToRank(p.current_lp, p.users?.summoner_name);
+    const isUnranked = rank.tier === 'UNRANKED';
+
     const translation = {
       'UNRANKED': 'Unranked', 'IRON': 'Hierro', 'BRONZE': 'Bronce', 'SILVER': 'Plata', 'GOLD': 'Oro',
       'PLATINUM': 'Platino', 'EMERALD': 'Esmeralda', 'DIAMOND': 'Diamante',
       'MASTER': 'Maestro', 'GRANDMASTER': 'Gran Maestro', 'CHALLENGER': 'Retador'
     };
     const tierSpanish = translation[rank.tier] || rank.tier;
-    const rankStr = rank.tier === 'MASTER' || rank.tier === 'GRANDMASTER' || rank.tier === 'CHALLENGER'
-      ? `${tierSpanish} (${rank.lp} LP)`
-      : `${tierSpanish} ${rank.division} (${rank.lp} LP)`;
+    
+    let rankStr = '';
+    if (isUnranked) {
+      rankStr = 'Unranked';
+    } else if (rank.tier === 'MASTER' || rank.tier === 'GRANDMASTER' || rank.tier === 'CHALLENGER') {
+      rankStr = `${tierSpanish} (${rank.lp} LP)`;
+    } else {
+      rankStr = `${tierSpanish} ${rank.division} (${rank.lp} LP)`;
+    }
+
+    const delta = isUnranked ? 0 : (p.current_lp - p.start_lp);
 
     return {
       userId: p.user_id,
@@ -1298,7 +1309,7 @@ export async function loadLadderDetails(ladderId) {
       teamName: p.teams?.name || '?',
       startLp: p.start_lp,
       currentLp: p.current_lp,
-      delta: p.current_lp - p.start_lp,
+      delta: delta,
       lastUpdated: p.last_updated,
       currentTier: rank.tier,
       currentDivision: rank.division,

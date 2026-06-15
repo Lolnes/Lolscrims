@@ -47,7 +47,8 @@ function getRiotRegionsFromTag(tag) {
   if (t === 'NA' || t === 'NA1') return { region: 'na1', routing: 'americas' };
   if (t === 'LAS' || t === 'LA2') return { region: 'la2', routing: 'americas' };
   if (t === 'BR' || t === 'BR1') return { region: 'br1', routing: 'americas' };
-  return { region: 'la1', routing: 'americas' };
+  // Fallback por defecto: LAS (la2) ya que es el servidor principal del equipo
+  return { region: 'la2', routing: 'americas' };
 }
 
 // Helper para hacer llamadas a la API de Riot con reintentos si nos topamos con rate limits

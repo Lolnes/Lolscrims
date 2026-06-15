@@ -1130,6 +1130,9 @@ export function getSummonerDeterministicLpValue(summonerName) {
 export async function updateUserProfile(userId, summonerName, privacy) {
   if (!isSupabaseConfigured) return;
   const trimmed = summonerName.trim();
+
+  // Solo actualizamos el perfil de usuario. El LP real se obtiene luego con syncUserGames.
+  // Usamos valores provisionales (estimados) hasta que se sincronice con Riot API.
   const lpValue = getSummonerDeterministicLpValue(trimmed);
   const newRank = lpToRank(lpValue, trimmed);
 
@@ -1145,14 +1148,18 @@ export async function updateUserProfile(userId, summonerName, privacy) {
     })
     .eq('id', userId);
   if (error) throw new Error('Error al actualizar perfil: ' + error.message);
-  
+
   // Borrar partidas antiguas de este usuario ya que cambió su Summoner Name
   await supabase
     .from('summoner_games')
     .delete()
     .eq('user_id', userId);
 
-  // Actualizar también en los ladders activos en que participa (tanto start_lp como current_lp para evitar saltos extraños)
+  // BUG FIX: Al cambiar el nombre NO reseteamos start_lp en los ladders.
+  // Resetear start_lp provocaría que el delta (current_lp - start_lp) se recalcule
+  // desde cero con un valor estimado (hash del nombre), generando LP negativos
+  // o incorrectos al comparar con el LP real de Riot que llegará después.
+  // Solo actualizamos current_lp para que la tabla refleje el nuevo nombre estimado.
   const { data: activeLadders } = await supabase
     .from('ladders')
     .select('id')
@@ -1161,9 +1168,11 @@ export async function updateUserProfile(userId, summonerName, privacy) {
     const activeIds = activeLadders.map(l => l.id);
     await supabase
       .from('ladder_participants')
-      .update({ start_lp: lpValue, current_lp: lpValue, last_updated: new Date() })
+      .update({ current_lp: lpValue, last_updated: new Date() })
       .eq('user_id', userId)
       .in('ladder_id', activeIds);
+    // NOTA: start_lp NO se toca. Se recalculará correctamente la primera vez
+    // que el usuario haga sync real con Riot API (syncUserGames).
   }
 }
 
@@ -1478,12 +1487,16 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
     let division = 'IV';
     let lp = 0;
     let lpValue = 0;
+    let isRanked = false;
 
     if (soloQEntry) {
       tier = soloQEntry.tier;
       division = soloQEntry.rank || 'IV'; // Riot llama "rank" a la división (I-IV)
       lp = soloQEntry.leaguePoints;
       lpValue = rankToLp(tier, division, lp);
+      isRanked = true;
+      // Defensa extra: Riot en rara ocasión devuelve leaguePoints negativo en transiciones de temporada
+      if (lpValue < 0) lpValue = 0;
     }
 
     // Obtener y actualizar los cortes reales de Apex (Challenger/GM) para esta región
@@ -1617,27 +1630,36 @@ export async function syncUserGames(userId, teamId, summonerName, isManual = tru
       .eq('id', userId);
     if (profileErr) throw new Error('Error al actualizar el Elo del invocador: ' + profileErr.message);
 
-    // Sincronizar en los ladders activos de este usuario
-    const { data: activeLadders } = await supabase
-      .from('ladders')
-      .select('id')
-      .eq('status', 'active');
-    
-    if (activeLadders && activeLadders.length > 0) {
-      const activeIds = activeLadders.map(l => l.id);
-      await supabase
-        .from('ladder_participants')
-        .update({ current_lp: lpValue, last_updated: new Date() })
-        .eq('user_id', userId)
-        .in('ladder_id', activeIds);
+    // BUG FIX: Solo sincronizar LP en ladders si el jugador está rankeado en SoloQ.
+    // Si lpValue === 0 (cuenta sin rankear), NO actualizamos current_lp en ladder_participants
+    // porque provocaría deltas negativos enormes (0 - start_lp = número negativo).
+    if (isRanked && lpValue > 0) {
+      const { data: activeLadders } = await supabase
+        .from('ladders')
+        .select('id')
+        .eq('status', 'active');
+
+      if (activeLadders && activeLadders.length > 0) {
+        const activeIds = activeLadders.map(l => l.id);
+        await supabase
+          .from('ladder_participants')
+          .update({ current_lp: lpValue, last_updated: new Date() })
+          .eq('user_id', userId)
+          .in('ladder_id', activeIds);
+      }
     }
+
+    const rankedStatus = isRanked
+      ? `Rango real: ${tier} ${division} (${lp} LP).`
+      : 'Esta cuenta no está rankeada en SoloQ. Los LP del ladder no se actualizarán hasta que juegues partidas clasificatorias.';
 
     return {
       success: true,
       gamesAdded: newGames.length,
-      status: newGames.length > 0 
-        ? `¡Sincronización real completada! Se añadieron ${newGames.length} partida(s) nueva(s). Rango real: ${tier} ${division} (${lp} LP).`
-        : `Tu cuenta ya está sincronizada con Riot API. Rango real: ${tier} ${division} (${lp} LP).`
+      isRanked,
+      status: newGames.length > 0
+        ? `¡Sincronización real completada! Se añadieron ${newGames.length} partida(s) nueva(s). ${rankedStatus}`
+        : `Tu cuenta ya está sincronizada con Riot API. ${rankedStatus}`
     };
 
   } catch (err) {

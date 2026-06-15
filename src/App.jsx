@@ -4376,15 +4376,6 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                               </div>
                               <div className="text-faint text-xs">{relativeTime}</div>
                             </div>
-                            
-                            <div className="separator" style={{ borderLeft: '1px solid var(--border)', height: '24px' }}></div>
-
-                            <div>
-                              <div className={`font-bold ${game.lpChange > 0 ? 'text-green' : 'text-red'}`} style={{ fontSize: '0.9rem' }}>
-                                {game.lpChange > 0 ? `+${game.lpChange} LP` : `${game.lpChange} LP`}
-                              </div>
-                              <div className="text-faint" style={{ fontSize: '0.65rem' }}>SoloQ</div>
-                            </div>
                           </div>
                         </div>
 
@@ -4440,8 +4431,8 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                   required
                 />
                 {editSummonerName.trim() && (
-                  <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    Rango detectado automáticamente: <strong className="text-gold">{getRankName(getSummonerDeterministicLpValue(editSummonerName), editSummonerName)}</strong>
+                  <div style={{ marginTop: '0.5rem', fontSize: '0.85rem', color: 'var(--text-secondary)', display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <span>⚠️ El rango se actualizará automáticamente tras guardar y presionar <strong>Sincronizar</strong> desde el tracker.</span>
                   </div>
                 )}
               </div>

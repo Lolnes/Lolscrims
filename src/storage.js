@@ -1852,14 +1852,8 @@ export async function syncUserGamesSimulated(userId, teamId, summonerName, isMan
 
 export async function backgroundSyncParticipant(ladderId, userId, teamId, summonerName, currentLpVal) {
   if (!isSupabaseConfigured || !userId) return;
-
-  // Actualizar marca temporal inmediatamente para evitar ejecuciones concurrentes
-  await supabase
-    .from('ladder_participants')
-    .update({ last_updated: new Date() })
-    .eq('ladder_id', ladderId)
-    .eq('user_id', userId);
-
+  // Llamar directamente a la sincronización. Si tiene éxito, syncUserGames se encargará
+  // de actualizar tanto el LP como la columna last_updated en la base de datos.
   await syncUserGames(userId, teamId, summonerName, false);
 }
 

@@ -267,6 +267,20 @@ export default function App() {
   /* ─── export/import ─── */
   const [showExport, setShowExport] = useState(false);
 
+  /* ─── onboarding ─── */
+  const [showWelcome, setShowWelcome] = useState(false);
+  useEffect(() => {
+    if (loaded && teamCode && currentUserId) {
+      const seen = localStorage.getItem(`lol-onboarded-${currentUserId}`);
+      if (!seen) setShowWelcome(true);
+    }
+  }, [loaded, teamCode, currentUserId]);
+
+  const dismissWelcome = () => {
+    setShowWelcome(false);
+    if (currentUserId) localStorage.setItem(`lol-onboarded-${currentUserId}`, '1');
+  };
+
   const handleExportJSON = () => {
     exportJSON({ players, comps, drafts, scrims, threshold, version: 3 });
   };
@@ -393,6 +407,9 @@ export default function App() {
           </button>
           <button className="btn btn--outline btn--sm" onClick={() => setShowExport(true)}>
             📦 Export / Import
+          </button>
+          <button className="btn btn--outline btn--sm" onClick={() => setShowWelcome(true)} title="Guía rápida">
+            ❔ Ayuda
           </button>
           <div className="threshold-control">
             <div className="threshold-control__label">Mínimo jugadores</div>
@@ -523,6 +540,17 @@ export default function App() {
           onExportJSON={handleExportJSON}
           onCopyDiscord={handleCopyDiscord}
           onImport={handleImport}
+        />
+      )}
+
+      {showWelcome && (
+        <WelcomeModal
+          teamName={teamName}
+          userName={currentUserName}
+          teamRole={myTeamRole}
+          hasSummoner={!!sessionPlayer}
+          onClose={dismissWelcome}
+          onGoToTab={(t) => { setTab(t); dismissWelcome(); }}
         />
       )}
     </div>
@@ -3230,6 +3258,82 @@ function ExportImportModal({ onClose, onExportJSON, onCopyDiscord, onImport }) {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   WELCOME MODAL — Guía rápida de onboarding
+   ═══════════════════════════════════════════════════════════════════ */
+
+function WelcomeModal({ teamName, userName, teamRole, hasSummoner, onClose, onGoToTab }) {
+  const isLeader = teamRole === 'captain' || teamRole === 'coach' || teamRole === 'manager';
+  const isPlayer = teamRole === 'player' || teamRole === 'captain' || teamRole === 'substitute';
+
+  const tabGuide = [
+    { icon: '📅', name: 'Horarios', desc: 'Marca cuándo puedes jugar; la app calcula las ventanas del equipo.' },
+    { icon: '⚔️', name: 'Composiciones', desc: 'Arma comps por lado y simula drafts de picks y bans.' },
+    { icon: '📝', name: 'Scrims', desc: 'Registra resultados y agenda scrims con otros equipos.' },
+    { icon: '🏆', name: 'Ladder', desc: 'Compite en SoloQ/Flex con seguimiento de rango real.' },
+    { icon: '📊', name: 'Stats', desc: 'Disponibilidad, rangos del equipo y campeones más jugados.' },
+  ];
+
+  // Primeros pasos según el rol
+  const steps = [];
+  if (isPlayer) {
+    steps.push({ icon: '📅', label: 'Marca tu disponibilidad', tab: 'schedule' });
+    if (!hasSummoner) steps.push({ icon: '🎮', label: 'Vincula tu cuenta de Riot', tab: 'ladder' });
+  }
+  if (teamRole === 'captain') {
+    steps.push({ icon: '👑', label: 'Gestiona solicitudes y roster', tab: 'captain' });
+  }
+  if (teamRole === 'coach' || teamRole === 'manager') {
+    steps.push({ icon: '⚔️', label: 'Planifica composiciones', tab: 'comps' });
+    steps.push({ icon: '📊', label: 'Revisa las estadísticas', tab: 'stats' });
+  }
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+        <div className="text-center mb-5">
+          <div className="auth-card__crest" style={{ width: 52, height: 52, fontSize: '1.4rem', marginBottom: '0.6rem' }}>⚔️</div>
+          <h3 className="modal__title" style={{ fontSize: '1.3rem' }}>¡Bienvenido a {teamName}!</h3>
+          <p className="text-sm text-muted mt-1">
+            Hola <strong style={{ color: 'var(--gold-bright)' }}>{userName}</strong>, esto es lo que puedes hacer aquí.
+          </p>
+        </div>
+
+        <div className="flex flex-col gap-2 mb-5">
+          {tabGuide.map((t) => (
+            <div key={t.name} className="flex items-start gap-3" style={{ padding: '0.4rem 0.2rem' }}>
+              <span style={{ fontSize: '1.1rem', flexShrink: 0 }}>{t.icon}</span>
+              <div>
+                <span className="font-semibold text-sm" style={{ color: 'var(--text-primary)' }}>{t.name}</span>
+                <span className="text-xs text-muted"> — {t.desc}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        {steps.length > 0 && (
+          <div className="mb-5">
+            <div className="section-header text-gold">Tus primeros pasos</div>
+            <div className="flex flex-col gap-2">
+              {steps.map((s) => (
+                <button key={s.tab} className="btn btn--outline w-full" style={{ justifyContent: 'flex-start', gap: '0.6rem' }}
+                  onClick={() => onGoToTab(s.tab)}>
+                  <span>{s.icon}</span> {s.label} <span style={{ marginLeft: 'auto', color: 'var(--gold-primary)' }}>→</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <button className="btn btn--gold w-full" onClick={onClose} style={{ padding: '0.6rem' }}>
+          ¡Entendido, a jugar!
+        </button>
+        <p className="text-center text-xs text-faint mt-3">Puedes reabrir esta guía con el botón ❔ Ayuda.</p>
       </div>
     </div>
   );

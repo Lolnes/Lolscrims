@@ -1686,6 +1686,72 @@ select.input {
     width: 100%;
     justify-content: center;
   }
+
+  /* ----- Leaderboard del ladder: tabla → tarjetas apiladas ----- */
+  .ladder-table thead { display: none; }
+
+  .ladder-table,
+  .ladder-table tbody,
+  .ladder-table tr,
+  .ladder-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .ladder-table tr {
+    position: relative;
+    margin-bottom: 0.75rem;
+    padding: 0.85rem 0.9rem 0.6rem;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+  }
+
+  .ladder-table tr.ladder-row-tr--me { border-color: var(--blue-border); }
+  .ladder-table tr.ladder-row-tr--selected { border-color: var(--gold-primary); }
+
+  /* Pos: medalla/numero como insignia arriba a la derecha */
+  .ladder-table td.ladder-cell-pos {
+    position: absolute;
+    top: 0.6rem;
+    right: 0.9rem;
+    width: auto;
+    padding: 0;
+    font-size: 1.1rem;
+    text-align: right !important;
+  }
+  .ladder-table td.ladder-cell-pos::before { display: none; }
+
+  /* Invocador: título de la tarjeta, sin etiqueta */
+  .ladder-table td.ladder-cell-name {
+    padding: 0 3rem 0.5rem 0;
+    margin-bottom: 0.5rem;
+    border-bottom: 1px solid var(--border);
+  }
+  .ladder-table td.ladder-cell-name::before { display: none; }
+  .ladder-table td.ladder-cell-name .flex { flex-wrap: wrap; }
+
+  /* Resto de celdas: etiqueta a la izquierda, valor a la derecha */
+  .ladder-table td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.3rem 0 !important;
+    text-align: right !important;
+    border: none;
+    font-size: 0.8rem;
+  }
+
+  .ladder-table td::before {
+    content: attr(data-label);
+    font-family: var(--font-mono);
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+    flex-shrink: 0;
+  }
 }
 
 @media (max-width: 480px) {

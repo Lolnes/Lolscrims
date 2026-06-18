@@ -4216,7 +4216,7 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
           <div className="flex flex-col gap-3">
             {incomingInvites.map(invite => (
               <div key={invite.id} className="flex items-center justify-between gap-4 flex-wrap p-3" style={{ background: 'var(--bg-primary)', borderRadius: 'var(--radius-md)', border: '1px solid var(--border)' }}>
-                <div>
+                <div style={{ flex: '1 1 200px' }}>
                   <span className="font-bold text-sm text-primary">{invite.fromTeamName}</span> te invita a unirte a su ranked ladder <span className="font-bold text-gold">"{invite.ladderName}"</span>.
                 </div>
                 <div className="flex items-center gap-2">
@@ -4310,9 +4310,9 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                     Finaliza el: <span className="font-bold text-primary">{new Date(ladderDetails.endDate).toLocaleDateString()}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-3 flex-wrap">
                   <div className="text-xs text-faint">
-                    Equipos participantes: <span className="text-primary font-bold">{ladderDetails.teams.map(t => t.name).join(', ')}</span>
+                    Equipos: <span className="text-primary font-bold">{ladderDetails.teams.map(t => t.name).join(', ')}</span>
                   </div>
                   {canDeleteLadder && (
                     <button
@@ -4362,10 +4362,10 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                             }}
                             style={{ cursor: 'pointer' }}
                           >
-                            <td style={{ textAlign: 'center', fontWeight: 'bold' }}>
+                            <td className="ladder-cell-pos" data-label="Pos" style={{ textAlign: 'center', fontWeight: 'bold' }}>
                               {idx + 1 === 1 ? '🥇' : idx + 1 === 2 ? '🥈' : idx + 1 === 3 ? '🥉' : `#${idx + 1}`}
                             </td>
-                            <td>
+                            <td className="ladder-cell-name" data-label="Invocador">
                               <div className="flex items-center gap-2">
                                 <span className="summoner-name-cell font-bold">
                                   {p.summonerName || 'Sin Registrar'}
@@ -4376,18 +4376,18 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
                                 )}
                               </div>
                             </td>
-                            <td>
+                            <td data-label="Equipo">
                               <span className="text-xs px-2 py-0.5 rounded text-primary" style={{ background: 'rgba(59,130,246,0.1)' }}>
                                 {p.teamName}
                               </span>
                             </td>
-                            <td className="text-muted text-xs hidden-mobile">
+                            <td className="text-muted text-xs hidden-mobile" data-label="Rango Inicial">
                               {getRankName(p.startLp, p.summonerName)}
                             </td>
-                            <td className="font-bold text-xs text-gold">
+                            <td className="font-bold text-xs text-gold" data-label="Rango Actual">
                               {p.currentRankStr || getRankName(p.currentLp, p.summonerName)}
                             </td>
-                            <td style={{ textAlign: 'right', fontWeight: 'bold' }} className={p.delta > 0 ? 'text-green' : p.delta < 0 ? 'text-red' : 'text-muted'}>
+                            <td data-label="Progreso" style={{ textAlign: 'right', fontWeight: 'bold' }} className={p.delta > 0 ? 'text-green' : p.delta < 0 ? 'text-red' : 'text-muted'}>
                               {p.delta > 0 ? `+${p.delta} LP` : p.delta < 0 ? `${p.delta} LP` : '0 LP'}
                             </td>
                           </tr>

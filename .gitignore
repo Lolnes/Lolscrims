@@ -35,4 +35,8 @@ public/champions/
 *.njsproj
 *.sln
 *.sw?
+
+# Documentos de contexto interno (notas para IA / planificación, no para el repo público)
 PHASE2_PLAN.md
+PHASE3_CONTEXT.md
+PROJECT_CONTEXT.md

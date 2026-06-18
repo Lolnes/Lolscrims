@@ -539,6 +539,7 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, window
     return 'map';
   });
   const paint = useRef({ active: false, value: true });
+  const [popKey, setPopKey] = useState(null);
 
   const activePlayer = players.find((p) => p.id === activeId);
   const isMapView = !activePlayer;
@@ -575,15 +576,17 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, window
     }
     const next = !activePlayer.avail?.[key];
     paint.current = { active: true, value: next };
+    setPopKey(key);
     setCell(activePlayer.id, key, next);
   };
   const onCellEnter = (key) => {
     if (isMapView || !isEditable || !paint.current.active) return;
+    setPopKey(key);
     setCell(activePlayer.id, key, paint.current.value);
   };
 
   useEffect(() => {
-    const stop = () => { paint.current.active = false; };
+    const stop = () => { paint.current.active = false; setPopKey(null); };
     window.addEventListener('pointerup', stop);
     return () => window.removeEventListener('pointerup', stop);
   }, []);
@@ -695,6 +698,7 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, window
                 threshold={threshold}
                 onCellDown={onCellDown}
                 onCellEnter={onCellEnter}
+                popKey={popKey}
               />
             ))}
           </div>
@@ -753,7 +757,7 @@ function ScheduleTab({ players, setPlayers, cellData, countOf, threshold, window
    GRID ROW
    ═══════════════════════════════════════════════════════════════════ */
 
-function GridRow({ i, isMapView, activePlayer, countOf, threshold, onCellDown, onCellEnter }) {
+function GridRow({ i, isMapView, activePlayer, countOf, threshold, onCellDown, onCellEnter, popKey }) {
   const h = slotHour(i);
   return (
     <>
@@ -770,7 +774,7 @@ function GridRow({ i, isMapView, activePlayer, countOf, threshold, onCellDown, o
               key={key}
               onPointerDown={(e) => onCellDown(e, key)}
               onPointerEnter={() => onCellEnter(key)}
-              className="grid-cell"
+              className={`grid-cell ${key === popKey ? 'grid-cell--pop' : ''}`}
               style={{
                 background: on ? GOLD : 'rgba(148,163,184,0.04)',
                 boxShadow: on ? 'inset 0 0 0 1px rgba(255,255,255,0.25)' : 'inset 0 0 0 1px rgba(148,163,184,0.08)',
@@ -1532,6 +1536,14 @@ const ROLE_FILTERS = [
   { id: 'sup', name: 'Sup', icon: '💚' },
 ];
 
+const META_ROLES = {
+  top: ['Aatrox', 'Akali', 'Camille', 'ChoGath', 'Darius', 'DrMundo', 'Fiora', 'Gangplank', 'Garen', 'Gnar', 'Gragas', 'Gwen', 'Illaoi', 'Irelia', 'Jax', 'Jayce', 'KSante', 'Kayle', 'Kennen', 'Kled', 'Malphite', 'Maokai', 'Mordekaiser', 'Nasus', 'Olaf', 'Ornn', 'Pantheon', 'Poppy', 'Quinn', 'Renekton', 'Riven', 'Rumble', 'Sejuani', 'Shen', 'Singed', 'Sion', 'TahmKench', 'Teemo', 'Tryndamere', 'Urgot', 'Vayne', 'Vladimir', 'Volibear', 'Yasuo', 'Yone', 'Yorick', 'Zac'],
+  jg: ['Amumu', 'BelVeth', 'Briar', 'Brand', 'Ekko', 'Elise', 'Evelynn', 'Fiddlesticks', 'Graves', 'Hecarim', 'Ivern', 'JarvanIV', 'Jax', 'Karthus', 'Kayn', 'KhaZix', 'Kindred', 'LeeSin', 'Lillia', 'MasterYi', 'Nidalee', 'Nocturne', 'Nunu', 'Olaf', 'Pantheon', 'Poppy', 'Rammus', 'RekSai', 'Rengar', 'Sejuani', 'Shaco', 'Shyvana', 'Skarner', 'Taliyah', 'Trundle', 'Udyr', 'Vi', 'Viego', 'Volibear', 'Warwick', 'Wukong', 'MonkeyKing', 'XinZhao', 'Zac'],
+  mid: ['Ahri', 'Akali', 'Akshan', 'Anivia', 'Annie', 'AurelionSol', 'Azir', 'Cassiopeia', 'Corki', 'Diana', 'Ekko', 'Fizz', 'Galio', 'Gragas', 'Heimerdinger', 'Hwei', 'Irelia', 'Kassadin', 'Katarina', 'LeBlanc', 'Lissandra', 'Lux', 'Malzahar', 'Naafiri', 'Neeko', 'Orianna', 'Pantheon', 'Qiyana', 'Ryze', 'Swain', 'Sylas', 'Syndra', 'Taliyah', 'Talon', 'TwistedFate', 'Veigar', 'VelKoz', 'Viktor', 'Vladimir', 'Xerath', 'Yasuo', 'Yone', 'Zed', 'Zoe'],
+  adc: ['Aphelios', 'Ashe', 'Caitlyn', 'Draven', 'Ezreal', 'Jhin', 'Jinx', 'Kaisa', 'KaiSa', 'Kalista', 'KogMaw', 'Lucian', 'MissFortune', 'Nilah', 'Samira', 'Senna', 'Sivir', 'Smolder', 'Tristana', 'Twitch', 'Varus', 'Vayne', 'Xayah', 'Zeri'],
+  sup: ['Alistar', 'Amumu', 'Bard', 'Blitzcrank', 'Brand', 'Braum', 'Janna', 'Karma', 'Leona', 'Lulu', 'Lux', 'Maokai', 'Milio', 'Morgana', 'Nami', 'Nautilus', 'Pantheon', 'Pyke', 'Rakan', 'Renata', 'Rell', 'Senna', 'Seraphine', 'Shen', 'Sona', 'Soraka', 'Swain', 'Taric', 'Thresh', 'VelKoz', 'Xerath', 'Yuumi', 'Zyra']
+};
+
 function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) {
   const bluePicks = draft.bluePicks || {};
   const redPicks = draft.redPicks || {};
@@ -1556,6 +1568,19 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
   const [currentTurnIndex, setCurrentTurnIndex] = useState(initialTurn);
   const [preSelectedChamp, setPreSelectedChamp] = useState(null);
   
+  // Referencia para bloquear clics sucesivos muy rápidos (evita condiciones de carrera en el render de React)
+  const isLockingRef = useRef(false);
+
+  // Obtener un campeón aleatorio que no esté baneado ni pickeado
+  const getRandomAvailableChamp = () => {
+    if (!champions) return '';
+    const exclude = getExcludedChamps();
+    const available = Object.keys(champions).filter((cid) => !exclude.includes(cid));
+    if (available.length === 0) return '';
+    const randomIndex = Math.floor(Math.random() * available.length);
+    return available[randomIndex];
+  };
+
   // Timer States
   const [timer, setTimer] = useState(30);
   const [timerActive, setTimerActive] = useState(false);
@@ -1635,16 +1660,23 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
       setTimer((t) => {
         if (t <= 1) {
           clearInterval(interval);
-          playBeep(220, 0.45); // low buzzer sound
+          playBeep(220, 0.45); // Sonido grave de alarma de fin de turno
           if (autoAdvance) {
-            // Auto lock-in empty
-            lockInChamp('');
+            const turnInfo = DRAFT_TURNS[currentTurnIndex];
+            if (turnInfo.type === 'ban') {
+              // En fase de baneo, se pierde el baneo y se banea nada
+              lockInChamp('');
+            } else {
+              // En fase de pickeo, se pickea algo de manera aleatoria que esté disponible
+              const randomChamp = getRandomAvailableChamp();
+              lockInChamp(randomChamp);
+            }
           } else {
             setIsTimerRunning(false);
           }
           return 30;
         }
-        // Beep tick warning in last 5 seconds
+        // Pitidos de advertencia en los últimos 5 segundos
         if (t <= 6) {
           playBeep(580, 0.08);
         }
@@ -1653,7 +1685,7 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
     }, 1000);
 
     return () => clearInterval(interval);
-  }, [timerActive, isTimerRunning, currentTurnIndex, autoAdvance, playBeep, bluePicksSeq, redPicksSeq]);
+  }, [timerActive, isTimerRunning, currentTurnIndex, autoAdvance, playBeep, bluePicksSeq, redPicksSeq, champions]);
 
   const updateDraftDatabase = (newTurn, newBlueSeq, newRedSeq, newBlueBans, newRedBans, isCompletedVal, roleBluePicks, roleRedPicks) => {
     onUpdate({
@@ -1676,8 +1708,32 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
 
   const lockInChamp = (champId) => {
     if (currentTurnIndex >= 20) return;
+    
+    // Evitar llamadas concurrentes al hacer doble clic o clics sucesivos muy rápidos
+    if (isLockingRef.current) return;
+    isLockingRef.current = true;
+
     const cid = champId !== undefined ? champId : preSelectedChamp;
     const turnInfo = DRAFT_TURNS[currentTurnIndex];
+
+    // Impedir baneo o selección de un campeón que ya está ocupado en el draft (excepto bans vacíos)
+    if (cid && cid !== 'None' && cid !== '') {
+      const exclude = getExcludedChamps();
+      
+      // Permitir re-seleccionar el mismo campeón que ya estaba en el slot actual (por si se corrige a mano)
+      let currentInSlot = '';
+      if (turnInfo.type === 'ban') {
+        currentInSlot = (turnInfo.team === 'azul' ? blueBans : redBans)[turnInfo.index];
+      } else {
+        currentInSlot = (turnInfo.team === 'azul' ? bluePicksSeq : redPicksSeq)[turnInfo.index];
+      }
+
+      if (exclude.includes(cid) && cid !== currentInSlot) {
+        alert(`El campeón ${champions?.[cid]?.name || cid} ya ha sido seleccionado o baneado en este draft.`);
+        isLockingRef.current = false;
+        return;
+      }
+    }
 
     let nextBlueSeq = [...bluePicksSeq];
     let nextRedSeq = [...redPicksSeq];
@@ -1703,6 +1759,11 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
     setRedPicksSeq(nextRedSeq);
     setCurrentTurnIndex(nextTurn);
     setPreSelectedChamp(null);
+
+    // Liberar la traba de clic rápido una vez que React haya procesado el render (250ms)
+    setTimeout(() => {
+      isLockingRef.current = false;
+    }, 250);
 
     // If turn 20 is reached, prepare defaults for roles
     let roleB = { ...blueRolePicks };
@@ -1850,38 +1911,44 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
 
   const filteredChamps = useMemo(() => {
     if (!champions) return [];
-    const q = searchQuery.toLowerCase();
-    const exclude = getExcludedChamps();
     
-    // Find what champ is currently at active slot to not exclude it
-    let currentInActiveSlot = '';
-    if (currentTurnIndex < 20) {
-      const turnInfo = DRAFT_TURNS[currentTurnIndex];
-      if (turnInfo.type === 'ban') {
-        currentInActiveSlot = (turnInfo.team === 'azul' ? blueBans : redBans)[turnInfo.index];
-      } else {
-        currentInActiveSlot = (turnInfo.team === 'azul' ? bluePicksSeq : redPicksSeq)[turnInfo.index];
-      }
-    }
+    // Normalizar texto (eliminar acentos/diacríticos y pasar a minúsculas)
+    const norm = (s) => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const q = norm(searchQuery);
 
     return Object.values(champions)
-      .filter((c) => !exclude.includes(c.id) || c.id === currentInActiveSlot)
       .filter((c) => {
-        if (!q && roleFilter === 'todos') return true;
-        const matchSearch = !q || c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q);
-        if (!matchSearch) return false;
+        // 1. Filtrar por Búsqueda de Texto (Normalizada)
+        if (q) {
+          const nameNorm = norm(c.name);
+          const idNorm = norm(c.id);
+          // Buscar coincidencia por nombre, id, o alias comunes (ej: Wukong para MonkeyKing)
+          const isMatch = nameNorm.includes(q) || idNorm.includes(q) || 
+            (idNorm === 'monkeyking' && q.includes('wukong')) ||
+            (idNorm === 'monkeyking' && q.includes('mono'));
+          if (!isMatch) return false;
+        }
 
+        // 2. Filtrar por Roles del Meta Real (META_ROLES con Fallback a tags de Riot)
         if (roleFilter === 'todos') return true;
+        
+        const listForRole = META_ROLES[roleFilter];
+        if (listForRole && listForRole.includes(c.id)) {
+          return true;
+        }
+
+        // Fallback a los tags de Riot por si es un campeón nuevo
         const tags = c.tags || [];
         if (roleFilter === 'top') return tags.includes('Fighter') || tags.includes('Tank');
         if (roleFilter === 'jg') return tags.includes('Fighter') || tags.includes('Assassin') || tags.includes('Tank');
         if (roleFilter === 'mid') return tags.includes('Mage') || tags.includes('Assassin');
         if (roleFilter === 'adc') return tags.includes('Marksman');
         if (roleFilter === 'sup') return tags.includes('Support') || tags.includes('Tank') || tags.includes('Mage');
-        return true;
+        
+        return false;
       })
       .sort((a, b) => a.name.localeCompare(b.name));
-  }, [champions, searchQuery, roleFilter, currentTurnIndex, blueBans, redBans, bluePicksSeq, redPicksSeq]);
+  }, [champions, searchQuery, roleFilter]);
 
   const getPlayerForRole = (team, roleId) => {
     return players.find((p) => p.team === team && p.role === roleId);
@@ -2306,7 +2373,6 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
                 overflowY: 'auto',
                 maxHeight: '340px',
                 display: 'grid',
-                gridTemplateColumns: 'repeat(4, 1fr)',
                 gap: '0.375rem',
                 paddingRight: '0.25rem'
               }}
@@ -2314,19 +2380,33 @@ function DraftEditor({ draft, champions, players, onUpdate, onDone, onDelete }) 
               {filteredChamps.map((champ) => {
                 const isSelected = preSelectedChamp === champ.id;
                 
+                // Determinar si el campeón ya ha sido seleccionado o baneado en el draft
+                const excludeList = getExcludedChamps();
+                let currentInActiveSlot = '';
+                if (currentTurnIndex < 20) {
+                  const turnInfo = DRAFT_TURNS[currentTurnIndex];
+                  if (turnInfo.type === 'ban') {
+                    currentInActiveSlot = (turnInfo.team === 'azul' ? blueBans : redBans)[turnInfo.index];
+                  } else {
+                    currentInActiveSlot = (turnInfo.team === 'azul' ? bluePicksSeq : redPicksSeq)[turnInfo.index];
+                  }
+                }
+                const isExcluded = excludeList.includes(champ.id) && champ.id !== currentInActiveSlot;
+                
                 return (
                   <button
                     key={champ.id}
-                    onClick={() => setPreSelectedChamp(champ.id)}
-                    onDoubleClick={() => lockInChamp(champ.id)}
-                    title={`${champ.name} (Doble clic para fijar)`}
-                    className={`draft-champ-item ${isSelected ? 'draft-champ-item--selected animate-pulse-fast' : ''}`}
+                    onClick={() => !isExcluded && setPreSelectedChamp(champ.id)}
+                    onDoubleClick={() => !isExcluded && lockInChamp(champ.id)}
+                    disabled={isExcluded}
+                    title={isExcluded ? `${champ.name} (Seleccionado/Baneado)` : `${champ.name} (Doble clic para fijar)`}
+                    className={`draft-champ-item ${isSelected ? 'draft-champ-item--selected animate-pulse-fast' : ''} ${isExcluded ? 'draft-champ-item--disabled' : ''}`}
                     style={{
                       background: isSelected ? 'var(--gold-glow)' : 'var(--bg-secondary)',
                       border: isSelected ? '1px solid var(--gold-bright)' : '1px solid transparent',
                       borderRadius: 'var(--radius-md)',
                       padding: '0.25rem',
-                      cursor: 'pointer',
+                      cursor: isExcluded ? 'not-allowed' : 'pointer',
                       display: 'flex',
                       flexDirection: 'column',
                       alignItems: 'center',
@@ -2764,6 +2844,27 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims, champi
     return { members, winrate, kda, topChamps, totalGames: games.length, synced };
   }, [riot, players]);
 
+  // Animación de entrada de los donuts/contadores del equipo (cuenta desde 0)
+  const [soloqAnim, setSoloqAnim] = useState(0);
+  const soloqRaf = useRef();
+  useEffect(() => {
+    if (soloq.totalGames <= 0) { setSoloqAnim(0); return; }
+    const reduce = typeof window !== 'undefined' && window.matchMedia &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduce) { setSoloqAnim(1); return; }
+    setSoloqAnim(0);
+    const t0 = performance.now();
+    const dur = 750;
+    const ease = (p) => 1 - Math.pow(1 - p, 3);
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      setSoloqAnim(ease(p));
+      if (p < 1) soloqRaf.current = requestAnimationFrame(step);
+    };
+    soloqRaf.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(soloqRaf.current);
+  }, [soloq.totalGames, soloq.winrate, soloq.kda]);
+
   const stats = useMemo(() => {
     const result = {};
 
@@ -2889,22 +2990,32 @@ function StatsTab({ players, cellData, countOf, threshold, comps, scrims, champi
             {/* Donuts de equipo */}
             {soloq.totalGames > 0 && (
               <div className="flex items-center gap-6 mb-4 flex-wrap justify-center">
-                <div className="donut" style={{ background: `conic-gradient(var(--blue) 0% ${soloq.winrate}%, rgba(148,163,184,0.12) ${soloq.winrate}% 100%)` }}>
-                  <div className="donut__center">
-                    <span className="donut__value">{soloq.winrate}%</span>
-                    <span className="donut__label">Winrate</span>
-                  </div>
-                </div>
-                <div className="donut" style={{ background: `conic-gradient(var(--gold-primary) 0% ${Math.min(100, (parseFloat(soloq.kda) / 5) * 100)}%, rgba(148,163,184,0.12) 0)` }}>
-                  <div className="donut__center">
-                    <span className="donut__value">{soloq.kda}</span>
-                    <span className="donut__label">KDA equipo</span>
-                  </div>
-                </div>
-                <div className="text-center">
-                  <div className="stat-card__value">{soloq.totalGames}</div>
-                  <div className="stat-card__label">partidas registradas</div>
-                </div>
+                {(() => {
+                  const wr = Math.round((soloq.winrate || 0) * soloqAnim);
+                  const kdaVal = parseFloat(soloq.kda || 0) * soloqAnim;
+                  const kdaPct = Math.min(100, (kdaVal / 5) * 100);
+                  const gamesVal = Math.round(soloq.totalGames * soloqAnim);
+                  return (
+                    <>
+                      <div className="donut" style={{ background: `conic-gradient(var(--blue) 0% ${wr}%, rgba(148,163,184,0.12) ${wr}% 100%)` }}>
+                        <div className="donut__center">
+                          <span className="donut__value">{wr}%</span>
+                          <span className="donut__label">Winrate</span>
+                        </div>
+                      </div>
+                      <div className="donut" style={{ background: `conic-gradient(var(--gold-primary) 0% ${kdaPct}%, rgba(148,163,184,0.12) 0)` }}>
+                        <div className="donut__center">
+                          <span className="donut__value">{kdaVal.toFixed(2)}</span>
+                          <span className="donut__label">KDA equipo</span>
+                        </div>
+                      </div>
+                      <div className="text-center">
+                        <div className="stat-card__value">{gamesVal}</div>
+                        <div className="stat-card__label">partidas registradas</div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
             )}
 

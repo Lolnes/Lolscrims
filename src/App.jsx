@@ -3852,6 +3852,8 @@ function CaptainPanel({ joinRequests, setJoinRequests, players, setPlayers, team
    LADDER TAB (Clasificación y Tracker)
    ═══════════════════════════════════════════════════════════════════ */
 
+const SYNC_COOLDOWN_MS = 30 * 60 * 1000; // No auto-sincronizar más de una vez cada 30 min
+
 function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamRole, players, champions }) {
   const [profile, setProfile] = useState(null);
   const [ladders, setLadders] = useState([]);
@@ -4006,6 +4008,37 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
     }
   };
 
+  // Lógica central de sincronización, reutilizada por el botón manual y el auto-refresh
+  const runSync = useCallback(async () => {
+    const result = await syncUserGames(currentUserId, teamCode, profile.summoner_name, true);
+    await fetchMyProfile();
+    await fetchLadderDetails();
+    if (activeGameViewerUser === currentUserId) {
+      const games = await loadUserGames(currentUserId);
+      setUserGames(games);
+    }
+    localStorage.setItem(`lol-last-sync-${currentUserId}`, String(Date.now()));
+    return result;
+  }, [currentUserId, teamCode, profile, fetchMyProfile, fetchLadderDetails, activeGameViewerUser]);
+
+  // Auto-refresh al abrir la pestaña si pasó el cooldown desde el último sync.
+  // Se ejecuta como máximo una vez por montaje (autoSyncDoneRef).
+  const autoSyncDoneRef = useRef(false);
+  useEffect(() => {
+    if (autoSyncDoneRef.current || !profile?.summoner_name) return;
+    const last = Number(localStorage.getItem(`lol-last-sync-${currentUserId}`) || 0);
+    if (Date.now() - last < SYNC_COOLDOWN_MS) return;
+    autoSyncDoneRef.current = true;
+    setSyncing(true);
+    setSyncStatus('Actualizando…');
+    runSync()
+      .then(result => {
+        if (result?.gamesAdded > 0) notify(`${result.gamesAdded} partida(s) nueva(s) sincronizada(s).`, 'success');
+      })
+      .catch(err => console.error('Auto-sync falló:', err))
+      .finally(() => { setSyncing(false); setSyncStatus(''); });
+  }, [profile, currentUserId, runSync]);
+
   const handleSyncGames = async () => {
     if (!profile?.summoner_name) {
       notify('Primero registra tu Summoner Name en tu perfil.', 'info');
@@ -4013,38 +4046,16 @@ function LadderTab({ teamCode, teamName, currentUserId, currentUserName, myTeamR
       return;
     }
     setSyncing(true);
-    setSyncStatus('Conectando con Riot API...');
-    
-    // Pequeño timeout para dar feedback visual de simulación
-    setTimeout(async () => {
-      try {
-        setSyncStatus('Descargando partidas recientes...');
-        const result = await syncUserGames(currentUserId, teamCode, profile.summoner_name, true);
-        
-        setSyncStatus('Actualizando clasificación...');
-        await fetchMyProfile();
-        await fetchLadderDetails();
-        
-        // Recargar partidas si el viewer está enfocado en nosotros
-        if (activeGameViewerUser === currentUserId) {
-          const games = await loadUserGames(currentUserId);
-          setUserGames(games);
-        }
-        
-        setSyncStatus(result.status || '¡Completado!');
-        setTimeout(() => {
-          setSyncing(false);
-          setSyncStatus('');
-          if (result.gamesAdded === 0 && result.status) {
-            notify(result.status, 'success');
-          }
-        }, 1200);
-      } catch (err) {
-        notify('Error al actualizar puntos: ' + err.message, 'error');
-        setSyncing(false);
-        setSyncStatus('');
-      }
-    }, 1500);
+    setSyncStatus('Sincronizando con Riot…');
+    try {
+      const result = await runSync();
+      notify(result.status || 'Sincronización completada.', 'success');
+    } catch (err) {
+      notify('Error al actualizar puntos: ' + err.message, 'error');
+    } finally {
+      setSyncing(false);
+      setSyncStatus('');
+    }
   };
 
   const handleCreateLadder = async (e) => {
